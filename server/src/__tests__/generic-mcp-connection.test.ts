@@ -119,6 +119,8 @@ type FixtureOptions = {
   omitChallengeHeader?: boolean;
   /** Serve no protected-resource metadata at all. */
   omitResourceMetadata?: boolean;
+  /** The `resource` the protected-resource metadata names, when not this MCP endpoint. */
+  resourceMetadataResource?: string;
 };
 
 type FixtureRequest = {
@@ -209,7 +211,9 @@ function installMcpOAuthFixture(options: FixtureOptions = {}) {
       }
       if (auth === "header" && options.requiredHeader) {
         const supplied = headers[options.requiredHeader.name.toLowerCase()];
-        if (supplied !== options.requiredHeader.value) return unauthorizedMcpResponse(resourceMetadataUrl);
+        if (supplied !== options.requiredHeader.value) {
+          return unauthorizedMcpResponse(resourceMetadataUrl, options.omitChallengeHeader);
+        }
       }
       const rpc = parsedBody as Record<string, unknown>;
       if (rpc.method === "tools/call") {
@@ -222,7 +226,7 @@ function installMcpOAuthFixture(options: FixtureOptions = {}) {
     }
 
     if (href === resourceMetadataUrl && !options.omitResourceMetadata) {
-      return jsonResponse({ resource: MCP_URL, authorization_servers: [ISSUER] });
+      return jsonResponse({ resource: options.resourceMetadataResource ?? MCP_URL, authorization_servers: [ISSUER] });
     }
 
     // RFC 8414 inserts the well-known segment before the issuer path; OIDC
@@ -900,6 +904,42 @@ describeEmbeddedPostgres("generic remote MCP connections", () => {
     await expect(service.connectGalleryApp(company.id, { link: MCP_URL, name: "Fixture bare 401" }))
       .rejects.toMatchObject({ status: 502, message: "Remote app returned HTTP 401" });
     // An endpoint that merely returns a 401 does not earn a registration.
+    expect(fixture.requestsTo("/register")).toHaveLength(0);
+  });
+
+  it("does not turn a rejected key into a sign-in when the 401 has no WWW-Authenticate header", async () => {
+    const fixture = installMcpOAuthFixture({
+      auth: "header",
+      requiredHeader: { name: "Authorization", value: "Bearer fixture-right-key" },
+      omitChallengeHeader: true,
+    });
+    const company = await createCompany(db);
+    const service = toolAccessService(db);
+
+    await expect(service.connectGalleryApp(company.id, {
+      link: MCP_URL,
+      name: "Fixture rejected key",
+      authMode: "bearer",
+      credentialValues: { "credentials.authorization": "fixture-wrong-key" },
+    })).rejects.toMatchObject({ status: 502, message: "Remote app returned HTTP 401" });
+    // The operator chose a key, so the server's OAuth metadata is not consulted.
+    expect(fixture.requestsTo("/.well-known/oauth-protected-resource/mcp")).toHaveLength(0);
+    expect(fixture.requestsTo("/register")).toHaveLength(0);
+    const rows = await db.select().from(toolConnections).where(eq(toolConnections.companyId, company.id));
+    expect(rows.every((row) => row.authKind === "api_key")).toBe(true);
+  });
+
+  it("ignores well-known metadata that names a different MCP resource", async () => {
+    const fixture = installMcpOAuthFixture({
+      auth: "oauth",
+      omitChallengeHeader: true,
+      resourceMetadataResource: `${MCP_ORIGIN}/other-mcp`,
+    });
+    const company = await createCompany(db);
+    const service = toolAccessService(db);
+
+    await expect(service.connectGalleryApp(company.id, { link: MCP_URL, name: "Fixture wrong resource" }))
+      .rejects.toMatchObject({ status: 502, message: "Remote app returned HTTP 401" });
     expect(fixture.requestsTo("/register")).toHaveLength(0);
   });
 

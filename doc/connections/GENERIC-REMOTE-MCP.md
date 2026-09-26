@@ -170,7 +170,11 @@ definition.
   authorization spec requires. Some gateways strip or rename that header
   (AWS API Gateway sends `x-amzn-remapped-www-authenticate`). A bare 401 becomes
   a sign-in prompt only when this discovery finds validated metadata. Otherwise
-  it stays a `Remote app returned HTTP 401` error.
+  it stays a `Remote app returned HTTP 401` error. A connection set up with a
+  key or custom headers does not get this discovery: its bare 401 means that
+  the key was rejected. Metadata found at a well-known URL must name this MCP
+  endpoint as its `resource` (RFC 9728 §3.3). Paperclip ignores metadata that
+  names a different path on the same host.
 - RFC 8414 authorization-server discovery for issuers with a path, in the
   spec's insertion form (`/.well-known/oauth-authorization-server<path>`) and
   the widely deployed OIDC suffix form (`<path>/.well-known/...`). A metadata
