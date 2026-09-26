@@ -6911,14 +6911,21 @@ export function toolAccessService(
         );
       }
       const authenticate = response.headers.get("www-authenticate") ?? "";
-      if (
-        response.status === 401 &&
-        /bearer|oauth|authorization/i.test(authenticate)
-      ) {
-        const endpoints = await discoverOAuthEndpoints(
-          connection,
-          authenticate,
-        );
+      const advertisesChallenge = /bearer|oauth|authorization/i.test(authenticate);
+      // The MCP authorization spec requires a client to fall back to the
+      // well-known protected-resource metadata when a 401 carries no usable
+      // `WWW-Authenticate` challenge. Some gateways strip or rename the header
+      // (AWS API Gateway sends `x-amzn-remapped-www-authenticate`), so a bare
+      // 401 still gets discovery. It is only treated as a sign-in challenge
+      // when that discovery produces validated metadata.
+      const endpoints =
+        response.status === 401
+          ? await discoverOAuthEndpoints(
+            connection,
+            advertisesChallenge ? authenticate : null,
+          )
+          : null;
+      if (response.status === 401 && (advertisesChallenge || endpoints)) {
         if (endpoints) {
           const nextConfig = {
             ...connection.config,

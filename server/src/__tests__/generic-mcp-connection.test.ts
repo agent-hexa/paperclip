@@ -111,6 +111,14 @@ type FixtureOptions = {
   registrationFailure?: { status: number; body: Record<string, unknown> };
   /** Extra provider-owned callbacks returned alongside the requested callback. */
   registrationExtraRedirectUris?: string[];
+  /**
+   * Answer the unauthenticated MCP request without a `WWW-Authenticate`
+   * header, the way a gateway that strips or renames it does (AWS API Gateway
+   * sends `x-amzn-remapped-www-authenticate`).
+   */
+  omitChallengeHeader?: boolean;
+  /** Serve no protected-resource metadata at all. */
+  omitResourceMetadata?: boolean;
 };
 
 type FixtureRequest = {
@@ -133,13 +141,14 @@ function jsonResponse(payload: unknown, status = 200): Response {
   } as unknown as Response;
 }
 
-function unauthorizedMcpResponse(resourceMetadataUrl: string): Response {
+function unauthorizedMcpResponse(resourceMetadataUrl: string, omitChallengeHeader = false): Response {
+  const challengeHeader = omitChallengeHeader ? "x-amzn-remapped-www-authenticate" : "www-authenticate";
   return {
     ok: false,
     status: 401,
     headers: {
       get: (name: string) =>
-        name.toLowerCase() === "www-authenticate"
+        name.toLowerCase() === challengeHeader
           ? `Bearer resource_metadata="${resourceMetadataUrl}"`
           : null,
     },
@@ -196,7 +205,7 @@ function installMcpOAuthFixture(options: FixtureOptions = {}) {
 
     if (href === MCP_URL && method === "POST") {
       if (auth === "oauth" && headers.authorization !== `Bearer ${accessToken}`) {
-        return unauthorizedMcpResponse(resourceMetadataUrl);
+        return unauthorizedMcpResponse(resourceMetadataUrl, options.omitChallengeHeader);
       }
       if (auth === "header" && options.requiredHeader) {
         const supplied = headers[options.requiredHeader.name.toLowerCase()];
@@ -212,7 +221,7 @@ function installMcpOAuthFixture(options: FixtureOptions = {}) {
       return jsonResponse({ jsonrpc: "2.0", id: "paperclip-catalog-refresh", result: { tools } });
     }
 
-    if (href === resourceMetadataUrl) {
+    if (href === resourceMetadataUrl && !options.omitResourceMetadata) {
       return jsonResponse({ resource: MCP_URL, authorization_servers: [ISSUER] });
     }
 
@@ -851,6 +860,47 @@ describeEmbeddedPostgres("generic remote MCP connections", () => {
     expect(JSON.stringify(connection!.config)).not.toContain("fixture-access-");
     expect(connection!.credentialSecretRefs.map((ref) => ref.configPath).sort())
       .toEqual(["oauth.access_token", "oauth.refresh_token"]);
+  });
+
+  it("discovers OAuth through well-known metadata when the 401 has no WWW-Authenticate header", async () => {
+    const fixture = installMcpOAuthFixture({ auth: "oauth", omitChallengeHeader: true });
+    const company = await createCompany(db);
+    const service = toolAccessService(db);
+
+    const connected = await service.connectGalleryApp(company.id, { link: MCP_URL, name: "Fixture gateway OAuth" });
+    expect(connected.auth).toMatchObject({ kind: "oauth", issuer: ISSUER, resource: MCP_URL });
+    // With no challenge to name it, the metadata came from the RFC 9728
+    // well-known path-insertion URL.
+    expect(fixture.requestsTo("/.well-known/oauth-protected-resource/mcp").length).toBeGreaterThan(0);
+
+    const start = await service.startOAuth(company.id, connected.connectionId, {
+      redirectUri: REDIRECT_URI,
+      actor: { actorType: "user", actorId: "board-user" },
+    });
+    expect(start.registrationSource).toBe("dcr");
+    const authorizationUrl = new URL(start.authorizationUrl);
+    expect(authorizationUrl.origin + authorizationUrl.pathname).toBe(`${ISSUER}/authorize`);
+    expect(authorizationUrl.searchParams.get("resource")).toBe(MCP_URL);
+
+    const completed = await service.completeOAuthCallback({
+      state: authorizationUrl.searchParams.get("state")!,
+      code: fixture.issueAuthorizationCode(start.authorizationUrl),
+      iss: ISSUER,
+      redirectUri: REDIRECT_URI,
+      actor: { actorType: "user", actorId: "board-user" },
+    });
+    expect(completed.actions.readOnly.map((action) => action.toolName)).toEqual(["list_insights"]);
+  });
+
+  it("keeps a bare 401 an error when no OAuth metadata is discoverable", async () => {
+    const fixture = installMcpOAuthFixture({ auth: "oauth", omitChallengeHeader: true, omitResourceMetadata: true });
+    const company = await createCompany(db);
+    const service = toolAccessService(db);
+
+    await expect(service.connectGalleryApp(company.id, { link: MCP_URL, name: "Fixture bare 401" }))
+      .rejects.toMatchObject({ status: 502, message: "Remote app returned HTTP 401" });
+    // An endpoint that merely returns a 401 does not earn a registration.
+    expect(fixture.requestsTo("/register")).toHaveLength(0);
   });
 
   it("discovers OAuth for a personal URL connection before its user grant exists", async () => {
