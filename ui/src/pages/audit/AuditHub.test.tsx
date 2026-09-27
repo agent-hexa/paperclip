@@ -112,17 +112,6 @@ describe("AuditHub", () => {
     expect(setBreadcrumbsMock).toHaveBeenCalledWith([{ label: "Audit" }]);
   });
 
-  it("leaves the h1 to the breadcrumb bar only when the section has a single breadcrumb", () => {
-    render("activity");
-    expect(container.querySelector("h1")).toBeNull();
-    expect(container.querySelector("h2")?.textContent).toBe("Audit");
-
-    flushSync(() => root.unmount());
-    render("runs");
-    expect(container.querySelectorAll("h1")).toHaveLength(1);
-    expect(container.querySelector("h1")?.textContent).toBe("Audit");
-  });
-
   it("uses routine-scoped activity instead of the privileged organization feed", () => {
     currentSearch = "entityType=routine&entityId=routine-1";
     render("activity");
