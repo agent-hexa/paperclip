@@ -229,7 +229,6 @@ function makeInstanceSettings({
     defaultEnvironmentId,
     general: {
       censorUsernameInLogs: true,
-      keyboardShortcuts: true,
       feedbackDataSharingPreference: "prompt",
       backupRetention: {
         dailyDays: 7,
@@ -242,6 +241,7 @@ function makeInstanceSettings({
       enableEnvironments,
       enableIsolatedWorkspaces: true,
       enableStreamlinedLeftNavigation: false,
+      enableAgentChat: false,
       enableConferenceRoomChat: false,
       enableIssuePlanDecompositions: true,
       enableExperimentalFileViewer: false,

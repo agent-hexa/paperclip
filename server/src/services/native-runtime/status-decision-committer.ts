@@ -581,14 +581,14 @@ async function materializeDecisionEffect(input: {
       { kind: "request_confirmation" }
     > = {
       kind: "request_confirmation",
-      idempotencyKey: `native-review:${input.decisionId}`,
+      idempotencyKey: `native-review:${input.decisionId}${effect.requestKey ? `:${effect.requestKey}` : ""}`,
       sourceRunId: input.runId,
       resolverPolicy: effect.ownerAgentId ? "anyone" : "human_only",
       addresseeAgentId: effect.ownerAgentId ?? null,
       addresseeUserId: effect.ownerUserId,
-      title: "Native completion review",
+      title: "Review requested",
       summary:
-        "The native runner requires authoritative review before completion.",
+        effect.prompt,
       continuationPolicy: "wake_assignee",
       payload: {
         version: 1,
@@ -612,6 +612,24 @@ async function materializeDecisionEffect(input: {
       reviewInput,
       { systemId: "native-status-committer", runId: input.runId },
     );
+    // The card and its next actor commit together. The post-commit dispatcher
+    // revalidates this exact review before granting a scoped reviewer run.
+    const reviewContext = {
+      nativeReviewInteractionId: interaction.id,
+      nativeReviewDecisionId: input.decisionId,
+    };
+    const reviewerWakeId = effect.ownerAgentId && interaction.effectiveResolverPolicy !== "human_only"
+      ? await enqueueWake({
+          tx: input.tx,
+          companyId: input.companyId,
+          issueId: input.issue.id,
+          agentId: effect.ownerAgentId,
+          reason: "native_completion_review",
+          idempotencyKey: `native-review:${interaction.id}`,
+          payload: reviewContext,
+          contextSnapshot: { ...reviewContext, forceFreshSession: true },
+        })
+      : null;
     return {
       effectKind: effect.kind,
       targetType: "issue_thread_interaction",
@@ -621,6 +639,7 @@ async function materializeDecisionEffect(input: {
         interactionKind: interaction.kind,
         ownerUserId: effect.ownerUserId,
         ownerAgentId: effect.ownerAgentId ?? null,
+        reviewerWakeId,
       },
     };
   }
@@ -1559,6 +1578,11 @@ export async function commitNativeStatusDecision(input: {
       .limit(1)
       .then((rows) => rows[0] ?? null);
     if (!issue) throw new NativeStatusRaceError();
+    // A completed model turn cannot close a persistent conversation. Preserve
+    // the task here; the response finalizer records its durable waiting state.
+    if (issue.conversationAgentId && input.decision.statusAction === "done") {
+      input = { ...input, decision: { ...input.decision, statusAction: "preserve", toStatus: issue.status as NativeStatusDecision["toStatus"], effects: [] } };
+    }
     if (coordinator.phase === "committed" && coordinator.decisionId) {
       if (input.supersedesCommittedDecisionId) {
         if (
@@ -1617,10 +1641,13 @@ export async function commitNativeStatusDecision(input: {
         throw new NativeStatusRaceError();
       }
     }
+    const passiveBoardResponseWait =
+      reasonCode === "board_response_waiting" ||
+      reasonCode === "board_response_wait_superseded";
     let boardResponseWaitOrigin: NativeBoardResponseWaitOrigin | null = null;
     if (
-      reasonCode === "board_response_waiting" ||
-      reasonCode === "board_response_wait_superseded"
+      passiveBoardResponseWait ||
+      input.requireBoardResponseWaitOrigin
     ) {
       const expected = input.requireBoardResponseWaitOrigin;
       if (
@@ -1628,7 +1655,7 @@ export async function commitNativeStatusDecision(input: {
         expected.companyId !== input.companyId ||
         expected.issueId !== input.issueId ||
         expected.runId !== input.runId ||
-        input.decision.effects.length !== 0
+        (passiveBoardResponseWait && input.decision.effects.length !== 0)
       )
         throw new NativeStatusRaceError();
       try {
@@ -1656,11 +1683,13 @@ export async function commitNativeStatusDecision(input: {
     let boardResponseWait: Awaited<
       ReturnType<typeof readNativeBoardResponseWaitSource>
     > = null;
-    if (reasonCode === "board_response_waiting") {
+    // Corrective continuations also carry this precondition. Revalidate it
+    // under the same locks before any decision effects can restart old work.
+    if (reasonCode === "board_response_waiting" || input.requireBoardResponseWaitSource) {
       const expected = input.requireBoardResponseWaitSource;
       if (
         !expected ||
-        input.decision.effects.length !== 0 ||
+        (passiveBoardResponseWait && input.decision.effects.length !== 0) ||
         expected.companyId !== input.companyId ||
         expected.issueId !== input.issueId ||
         expected.runId !== input.runId
@@ -1798,7 +1827,7 @@ export async function commitNativeStatusDecision(input: {
     }
     if (!decisionRow) throw new Error("native_status_decision_not_persisted");
 
-    if (boardResponseWait) {
+    if (boardResponseWait && reasonCode === "board_response_waiting") {
       // The answer and passive-wait receipt commit together. In particular,
       // no chat presentation authorization is supplied: this is Board-only.
       await issueService(tx as unknown as Db).addComment(
@@ -1920,6 +1949,7 @@ export async function commitNativeStatusDecision(input: {
                 completedChildIssueId: input.issueId,
                 childIssueIds: parent.childIssueIds,
                 childIssueSummaries: parent.childIssueSummaries,
+                onboardingCompletion: parent.onboardingCompletion,
                 childIssueSummaryTruncated: parent.childIssueSummaryTruncated,
               }
             : null;
@@ -1964,12 +1994,14 @@ export async function commitNativeStatusDecision(input: {
             completedChildIssueId: input.issueId,
             childIssueIds: parent.childIssueIds,
             childIssueSummaries: parent.childIssueSummaries,
+            onboardingCompletion: parent.onboardingCompletion,
             childIssueSummaryTruncated: parent.childIssueSummaryTruncated,
           },
           contextSnapshot: {
             completedChildIssueId: input.issueId,
             childIssueIds: parent.childIssueIds,
             childIssueSummaries: parent.childIssueSummaries,
+            onboardingCompletion: parent.onboardingCompletion,
             childIssueSummaryTruncated: parent.childIssueSummaryTruncated,
           },
         });
@@ -1981,6 +2013,7 @@ export async function commitNativeStatusDecision(input: {
             parentIssueId: parent.id,
             completedChildIssueId: input.issueId,
             childIssueSummaries: parent.childIssueSummaries,
+            onboardingCompletion: parent.onboardingCompletion,
             childIssueSummaryTruncated: parent.childIssueSummaryTruncated,
           },
         });

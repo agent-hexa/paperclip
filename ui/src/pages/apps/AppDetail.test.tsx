@@ -5,6 +5,8 @@ import type { ReactNode } from "react";
 import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { getAppStoreDefinition } from "@paperclipai/shared";
+import { rememberSkillSourceReturn, skillSourceReturnPath } from "@/lib/skill-source-connect-return";
 import { AppDetail } from "./AppDetail";
 import { APP_TABS } from "./app-tabs";
 
@@ -27,6 +29,7 @@ const putConnectionInstallsMock = vi.hoisted(() => vi.fn());
 const refreshCatalogMock = vi.hoisted(() => vi.fn());
 const checkConnectionHealthMock = vi.hoisted(() => vi.fn());
 const startOAuthMock = vi.hoisted(() => vi.fn());
+const reconnectConnectionMock = vi.hoisted(() => vi.fn());
 const listConnectionGrantsMock = vi.hoisted(() => vi.fn());
 const revokeConnectionGrantMock = vi.hoisted(() => vi.fn());
 const createConnectionGrantDelegationMock = vi.hoisted(() => vi.fn());
@@ -86,7 +89,7 @@ vi.mock("@/api/tools", () => ({
       replaceConnectionGrantMembersMock(connectionId, grantId, memberUserIds),
     startPersonalAuthorization: (companyId: string, connectionId: string, input: unknown) =>
       startPersonalAuthorizationMock(companyId, connectionId, input),
-    reconnectConnection: vi.fn(),
+    reconnectConnection: (id: string, values: unknown) => reconnectConnectionMock(id, values),
   },
 }));
 
@@ -327,6 +330,7 @@ describe("AppDetail", () => {
   let root: ReturnType<typeof createRoot>;
 
   beforeEach(() => {
+    sessionStorage.clear();
     container = document.createElement("div");
     document.body.appendChild(container);
     mockParams.connectionId = "conn-1";
@@ -453,10 +457,28 @@ describe("AppDetail", () => {
     await flushReact();
   }
 
+  it.each([
+    { transport: "rest_api", config: { sourceTemplateKey: "composio", connectionMethodKey: "api-key" } },
+    { transport: "mcp_remote", config: { provider: "composio", parentConnectionId: "old-parent", toolkitSlug: "github" } },
+  ])("shows replacement and explicit removal for a retired Composio record", async (legacy) => {
+    getConnectionMock.mockResolvedValue(connection({ ...legacy, enabled: false, healthStatus: "error" }));
+    await renderAppDetail();
+    expect(container.textContent).toContain("Connection retired");
+    expect(container.textContent).toContain("Remove each obsolete connection separately");
+    expect(container.textContent).not.toContain("Paused");
+    expect(container.textContent).not.toContain("Refresh actions");
+    const replacement = Array.from(container.querySelectorAll("button")).find((b) => b.textContent === "Add Composio MCP connection")!;
+    await act(async () => replacement.click());
+    expect(mockNavigate).toHaveBeenCalledWith("/apps/connect?source=composio");
+    const danger = Array.from(container.querySelectorAll("button")).find((b) => b.textContent?.includes("Danger zone"))!;
+    await act(async () => danger.click());
+    expect(container.textContent).toContain("Remove app");
+    expect(Array.from(container.querySelectorAll("button")).some((b) => b.textContent === "Reconnect")).toBe(false);
+  });
+
   it("uses Permissions as the primary connection page and has no Setup tab", () => {
     expect(APP_TABS.map((tab) => tab.key)).toEqual([
       "permissions",
-      "services",
       "review",
     ]);
   });
@@ -586,6 +608,20 @@ describe("AppDetail", () => {
       tone: "success",
     });
     expect(mockNavigate).toHaveBeenCalledWith("/apps/conn-1/permissions", { replace: true });
+  });
+
+  it.each([
+    ["company-1", "github", "active", true],
+    ["other-company", "github", "active", false],
+    ["company-1", "notion", "active", false],
+    ["company-1", "github", "pending", false],
+  ])("resumes a skill import only for its company's active GitHub callback (%s, %s, %s)", async (companyId, provider, status, returns) => {
+    rememberSkillSourceReturn("company-1", "new");
+    mockSearchParams.value = new URLSearchParams("success=1");
+    getConnectionMock.mockResolvedValue(connection({ companyId, status, config: { sourceTemplateKey: provider } }));
+    await renderAppDetail();
+    expect(mockNavigate).toHaveBeenCalledWith(returns ? "/skills/sources/new" : "/apps/conn-1/permissions", { replace: true });
+    expect(skillSourceReturnPath("company-1")).toBe(returns ? null : "/skills/sources/new");
   });
 
   it("normalizes the retired post-OAuth Setup URL into Permissions", async () => {
@@ -1172,6 +1208,55 @@ describe("AppDetail", () => {
     expect(container.textContent).toContain("Which agents can use this connection?");
   });
 
+  it.each([
+    { name: "remote.url", placement: "url", key: "url", prefix: null, label: "MCP server URL", value: "https://example.com/mcp?token=fresh", path: "remote.url" },
+    { name: "headers.X-Api-Key", placement: "header", key: "X-Api-Key", prefix: null, label: "X-Api-Key", value: "fresh-key", path: "headers.X-Api-Key" },
+    { name: "authorization", placement: "header", key: "Authorization", prefix: "Bearer ", label: "App key", value: "fresh-token", path: "credentials.authorization" },
+  ])("reconnects a generic $label using its stored credential placement", async (fixture) => {
+    listGalleryMock.mockResolvedValue({ apps: [] });
+    listApplicationsMock.mockResolvedValue({ applications: [] });
+    getConnectionMock.mockResolvedValue(connection({
+      authKind: "api_key",
+      healthStatus: "missing_secret",
+      credentialRefs: [{ ...fixture, secretId: "old-secret", version: "latest" }],
+    }));
+    reconnectConnectionMock.mockResolvedValue({ connection: connection({ healthStatus: "ok" }) });
+    await renderAppDetail();
+
+    const field = container.querySelector<HTMLInputElement>(`input[aria-label="${fixture.label}"]`);
+    expect(field).not.toBeNull();
+    await act(() => setInputValue(field!, fixture.value));
+    await act(() => findButton("Check & reconnect")!.click());
+    await flushReact();
+
+    expect(reconnectConnectionMock).toHaveBeenCalledWith("conn-1", { [fixture.path]: fixture.value });
+    expect(pushToastMock).toHaveBeenCalledWith(expect.objectContaining({ title: "Reconnected" }));
+  });
+
+  it.each(["permissions", "review"])("offers a supported replacement for an obsolete Anthropic connection on %s", async (tab) => {
+    mockParams.tab = tab;
+    listApplicationsMock.mockResolvedValue({ applications: [] });
+    listGalleryMock.mockResolvedValue({ apps: [getAppStoreDefinition("anthropic")!] });
+    getConnectionMock.mockResolvedValue(connection({
+      name: "Anthropic",
+      transport: "rest_api",
+      authKind: "api_key",
+      config: { sourceTemplateKey: "anthropic", connectionMethodKey: "api-key" },
+      healthStatus: "error",
+      healthMessage: "This connection has no supported tool integration.",
+    }));
+
+    await renderAppDetail();
+
+    expect(container.querySelector('input[type="password"]')).toBeNull();
+    expect(findButton("Check & reconnect")).toBeUndefined();
+    expect(findButton("Reconnect")).toBeUndefined();
+    expect(container.textContent).toContain("Connection no longer supported");
+    expect(container.textContent).toContain("then remove this connection");
+    expect(container.querySelector('a[href="/apps/connect?source=anthropic"]')?.textContent)
+      .toBe("Add supported connection");
+  });
+
   it("offers retry for a transient GitHub error without asking for another login", async () => {
     mockParams.tab = "permissions";
     getConnectionMock.mockResolvedValue(connection({
@@ -1336,6 +1421,14 @@ describe("AppDetail", () => {
     return Array.from(container.querySelectorAll("button"))
       .find((button) => button.textContent?.trim() === label);
   }
+
+  it("does not label a revoked AI credential as Connected", async () => {
+    getConnectionMock.mockResolvedValue(connection({ connectionPurpose: "ai", transport: "runtime_auth", healthStatus: "ok", config: { provider: "openai", method: "api_key" } }));
+    listConnectionGrantsMock.mockResolvedValue({ connection: { id: "conn-1" }, grants: [organizationGrant({ status: "revoked" })], capabilities: fullCapabilities(), currentUserId: "user-1", members: [] });
+    await renderAppDetail();
+    expect(container.textContent).toContain("Revoked");
+    expect(container.textContent).not.toContain("Connected");
+  });
 
   it("keeps the app header concise on every tab", async () => {
     mockParams.tab = "permissions";

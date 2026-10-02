@@ -10,6 +10,11 @@ export interface ExecutionContinuationEnvelope {
   };
   originCommentIds: string[];
   objective: string;
+  objectiveSource?: {
+    kind: "comment" | "description" | "title";
+    id: string;
+    revision: string | null;
+  };
   messages: Array<{
     id: string;
     authorType: string;
@@ -21,6 +26,15 @@ export interface ExecutionContinuationEnvelope {
     updatedAt: string;
     deleted: boolean;
     sourceTrust: unknown;
+  }>;
+  /** Only direct human resolutions, projected from server-owned resolver columns. */
+  humanResponses?: Array<{
+    id: string;
+    kind: string;
+    status: string;
+    resolvedByUserId: string;
+    resolvedAt: string;
+    result: unknown;
   }>;
   interactionOutcomes: Array<{
     id: string;
@@ -35,6 +49,8 @@ export interface ExecutionContinuationEnvelope {
   };
   recoveryOutcomes?: Array<{ recoveryActionId: string; decision: unknown }>;
   completedWork: string | null;
+  /** Start a new turn from history; never replay prior tool calls automatically. */
+  interruptedRunId?: string;
   /** Completed mutations are context, never instructions to replay them. */
   completedActions?: Array<{
     runId: string;

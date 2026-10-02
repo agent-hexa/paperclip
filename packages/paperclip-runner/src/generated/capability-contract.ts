@@ -6,9 +6,9 @@ export type CapabilityPrimaryDisposition =
   | "optional_agent_tool";
 
 export const capabilityInventoryCounts = {
-  "skillReferenceCapabilities": 153,
+  "skillReferenceCapabilities": 157,
   "evalCases": 106,
-  "normativeRows": 259,
+  "normativeRows": 263,
   "legacyMcpAliases": 42
 } as const;
 

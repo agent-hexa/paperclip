@@ -95,6 +95,9 @@ export function withQueuedCommentIdsInRunContext(
   delete context.paperclipWakeComment;
   delete context.paperclipTaskMarkdown;
   delete context.paperclipTaskMarkdownCompact;
+  delete context.paperclipTaskMarkdownAssignment;
+  delete context.paperclipTaskMarkdownAssignmentCompact;
+  delete context.paperclipTurnContext;
   return context;
 }
 
@@ -177,6 +180,7 @@ export function buildQueuedCommentQueueSnapshot<TComment extends QueuedCommentQu
   protocol: QueuedCommentQueueProtocol;
   steeringDisposition: IssueQueuedCommentQueue["steeringDisposition"];
   comments: TComment[];
+  executionWait?: IssueQueuedCommentQueue["executionWait"];
   actorType: "agent" | "user";
   actorId: string;
 }): IssueQueuedCommentQueue {
@@ -188,6 +192,7 @@ export function buildQueuedCommentQueueSnapshot<TComment extends QueuedCommentQu
     revision: queuedCommentQueueRevision({ queueId: facts.queueId, comments: facts.comments }),
     protocol: facts.protocol,
     steeringDisposition: facts.steeringDisposition,
+    ...(facts.executionWait ? { executionWait: facts.executionWait } : {}),
     entries: facts.comments.map((comment, position) => ({
       comment: comment as unknown as IssueComment,
       position,

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Check,
   ChevronLeft,
@@ -11,6 +11,7 @@ import type {
   PaperclipQuestionSet,
 } from "@paperclipai/adapter-utils";
 import type { MentionOption } from "@/components/MarkdownEditor";
+import { MarkdownBody } from "@/components/MarkdownBody";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
@@ -28,6 +29,16 @@ import { matchSafeQuestionValidationPattern } from "./question-validation-patter
 
 type Question = PaperclipQuestionSet["questions"][number];
 type Answer = PaperclipQuestionResponse["answers"][string];
+
+/**
+ * A form-level message, tagged with whether answering a question resolves it.
+ *
+ * Only a missing-answer complaint is something a selection can settle. A send
+ * that failed is not: the answers are still unsent, so the message has to
+ * outlive the next click rather than disappear the moment the reader touches
+ * an option.
+ */
+type FormError = { message: string; fromMissingAnswer?: boolean };
 
 export interface QuestionFormProps {
   id: string;
@@ -128,9 +139,9 @@ function SelectOption({
       aria-checked={selected}
       disabled={disabled}
       className={cn(
-        "flex w-full items-start gap-2 rounded-md px-2.5 py-2 text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-60",
+        "tc-question-option flex w-full items-start gap-2 rounded-md px-2.5 py-2 text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-60",
         selected
-          ? "bg-muted/80"
+          ? "bg-foreground/5"
           : recommended
             ? "bg-muted/50"
             : "hover:bg-muted/40",
@@ -263,7 +274,17 @@ export function QuestionForm({
   );
   const [working, setWorking] = useState<"submit" | "cancel" | null>(null);
   const [inputUploading, setInputUploading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<FormError | null>(null);
+  const promptRef = useRef<HTMLParagraphElement>(null);
+  const previousPage = useRef(page);
+
+  useEffect(() => {
+    if (previousPage.current !== page) {
+      promptRef.current?.focus();
+      previousPage.current = page;
+    }
+  }, [page]);
+
   const [filters, setFilters] = useState<Record<string, string>>({});
 
   useEffect(() => {
@@ -316,6 +337,7 @@ export function QuestionForm({
   }
 
   function toggleOption(optionId: string) {
+    if (disabled || working || inputUploading) return;
     const optionIds = multiple
       ? selected.includes(optionId)
         ? selected.filter((candidate) => candidate !== optionId)
@@ -326,11 +348,18 @@ export function QuestionForm({
       selectedOptionIds: optionIds,
       ...(!multiple ? { customText: undefined } : {}),
     };
-    // Picking only selects. Next / Submit answers moves on or sends, so a
-    // click can never start work by itself.
     setAnswers({ ...answers, [question.id]: nextAnswer });
-    if (!multiple)
+    if (!multiple) {
       setCustomActive((current) => ({ ...current, [question.id]: false }));
+      // Picking an option answers the question; it does not navigate. Moving on
+      // stays an explicit act — Next, the pagination arrows, or Submit — so a
+      // misclick never costs the reader the page they were still reading.
+      //
+      // Clear only the complaint this selection actually answers. A failed send
+      // has to survive it, or the last page quietly loses the one sign that the
+      // answers never left.
+      setError((current) => (current?.fromMissingAnswer ? null : current));
+    }
   }
 
   function toggleCustom() {
@@ -356,9 +385,10 @@ export function QuestionForm({
       // validating, and a restored draft can land past it. Go back to that
       // question and say so rather than dropping the send.
       setPage(invalidIndex);
-      setError(
-        `Question ${invalidIndex + 1} needs an answer before you can send.`,
-      );
+      setError({
+        message: `Question ${invalidIndex + 1} needs an answer before you can send.`,
+        fromMissingAnswer: true,
+      });
       return;
     }
     setWorking("submit");
@@ -370,11 +400,12 @@ export function QuestionForm({
       });
       if (draftKey) clearDraft(draftKey);
     } catch (cause) {
-      setError(
-        cause instanceof Error
-          ? cause.message
-          : "The answers could not be submitted.",
-      );
+      setError({
+        message:
+          cause instanceof Error
+            ? cause.message
+            : "The answers could not be submitted.",
+      });
     } finally {
       setWorking(null);
     }
@@ -388,11 +419,12 @@ export function QuestionForm({
       await onCancel();
       if (draftKey) clearDraft(draftKey);
     } catch (cause) {
-      setError(
-        cause instanceof Error
-          ? cause.message
-          : "The questions could not be cancelled.",
-      );
+      setError({
+        message:
+          cause instanceof Error
+            ? cause.message
+            : "The questions could not be cancelled.",
+      });
     } finally {
       setWorking(null);
     }
@@ -461,10 +493,13 @@ export function QuestionForm({
   }
   return (
     <div
+      key={question.id}
+      className="tc-question-page"
       onKeyDown={(event) => {
         if (
           disabled ||
           working ||
+          event.repeat ||
           question.answerMode === "text" ||
           event.metaKey ||
           event.ctrlKey ||
@@ -481,9 +516,14 @@ export function QuestionForm({
       }}
     >
       {questionSet.description ? (
-        <p className="mb-3 text-sm text-muted-foreground">
-          {questionSet.description}
-        </p>
+        <div
+          role="region"
+          aria-label="Question context"
+          tabIndex={0}
+          className="mb-3 max-h-96 overflow-auto text-sm text-muted-foreground"
+        >
+          <MarkdownBody mediaMode="reference" linkIssueReferences={false}>{questionSet.description}</MarkdownBody>
+        </div>
       ) : null}
       {question.answerMode === "text" ? (
         <div className="mb-2 flex items-center gap-3 text-xs text-muted-foreground">
@@ -508,6 +548,8 @@ export function QuestionForm({
           </p>
         ) : null}
         <p
+          ref={promptRef}
+          tabIndex={-1}
           id={`${id}-${question.id}-prompt`}
           className="text-sm font-medium leading-5 text-foreground"
         >
@@ -620,7 +662,7 @@ export function QuestionForm({
       <div aria-live="assertive">
         {error ? (
           <div className="mt-2 rounded-sm border border-destructive/60 bg-destructive/10 px-2.5 py-2 text-sm text-destructive">
-            {error}
+            {error.message}
           </div>
         ) : null}
       </div>

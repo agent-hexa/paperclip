@@ -1,3 +1,4 @@
+import type { SetIssueTitle } from "@paperclipai/shared";
 import type { ExecutionReconciliation } from "@paperclipai/shared";
 import type {
   AcceptedPlanDecompositionSummary,
@@ -96,6 +97,7 @@ export type IssueListFilters = {
   originKindPrefix?: string;
   originId?: string;
   descendantOf?: string;
+  createdFromIssueId?: string;
   includeRoutineExecutions?: boolean;
   includeBlockedBy?: boolean;
   includeBlockedInboxAttention?: boolean;
@@ -104,7 +106,8 @@ export type IssueListFilters = {
   q?: string;
   limit?: number;
   offset?: number;
-  sortField?: "updated";
+  sortField?: "updated" | "id";
+  afterId?: string;
   sortDir?: "asc" | "desc";
 };
 
@@ -135,6 +138,7 @@ function issueListSearchParams(filters?: IssueListFilters) {
     params.set("originKindPrefix", filters.originKindPrefix);
   if (filters?.originId) params.set("originId", filters.originId);
   if (filters?.descendantOf) params.set("descendantOf", filters.descendantOf);
+  if (filters?.createdFromIssueId) params.set("createdFromIssueId", filters.createdFromIssueId);
   if (filters?.includeRoutineExecutions)
     params.set("includeRoutineExecutions", "true");
   if (filters?.includeBlockedBy) params.set("includeBlockedBy", "true");
@@ -151,10 +155,23 @@ function issueListSearchParams(filters?: IssueListFilters) {
     params.set("offset", String(filters.offset));
   if (filters?.sortField) params.set("sortField", filters.sortField);
   if (filters?.sortDir) params.set("sortDir", filters.sortDir);
+  if (filters?.afterId) params.set("afterId", filters.afterId);
   return params;
 }
 
 export const issuesApi = {
+  /** Fetch every page for bounded task-detail relations, not just the default first page. */
+  listAll: async (companyId: string, filters: Omit<IssueListFilters, "limit" | "offset" | "sortField" | "sortDir" | "afterId" | "attention">, options?: RequestOptions): Promise<Issue[]> => {
+    const pageSize = 500;
+    const tasks = new Map<string, Issue>();
+    let afterId: string | undefined;
+    for (;;) {
+      const page = await issuesApi.list(companyId, { ...filters, limit: pageSize, sortField: "id", sortDir: "asc", afterId }, options);
+      for (const task of page) tasks.set(task.id, task);
+      if (page.length < pageSize) return [...tasks.values()];
+      afterId = page[page.length - 1]!.id;
+    }
+  },
   list: (
     companyId: string,
     filters?: IssueListFilters,
@@ -240,6 +257,8 @@ export const issuesApi = {
     api.delete<{ id: string; archivedAt: Date } | { ok: true }>(
       `/issues/${id}/inbox-archive`,
     ),
+  setTitle: (id: string, data: SetIssueTitle) =>
+    api.put<{ id: string; title: string; titleNeedsGeneration: boolean; changed: boolean }>(`/issues/${id}/title`, data),
   create: (companyId: string, data: Record<string, unknown>) =>
     api.post<Issue>(`/companies/${companyId}/issues`, data),
   update: (id: string, data: Record<string, unknown>) => {
@@ -255,6 +274,8 @@ export const issuesApi = {
       `/issues/${id}/stalled-review-decision`,
       data,
     ),
+  retryWorkspaceExport: (id: string, data: { actionId: string; runId: string; repairNote: string }) =>
+    api.post<{ runId: string; resultId: string; leaseId: string; status: "queued" }>(`/issues/${id}/recovery-actions/retry-workspace-export`, data),
   resolveRecoveryAction: (
     id: string,
     data: {
@@ -368,6 +389,19 @@ export const issuesApi = {
       `/issues/${id}/queued-comments/order`,
       data,
     ),
+  interruptQueuedComments: (
+    id: string,
+    data: { queueId: string; targetRunId: string | null; revision: string },
+  ) => api.post<IssueQueuedCommentQueue>(`/issues/${id}/queued-comments/interrupt`, data),
+  interruptLatestQueuedComments: async (id: string, expectedTargetRunId: string | null): Promise<IssueQueuedCommentQueue> => {
+    const queue = await issuesApi.getQueuedComments(id);
+    if (!queue.queueId || (queue.targetRunId && queue.targetRunId !== expectedTargetRunId)) {
+      throw new Error("The queued messages changed. Refresh and try again.");
+    }
+    return issuesApi.interruptQueuedComments(id, {
+      queueId: queue.queueId, revision: queue.revision, targetRunId: queue.targetRunId,
+    });
+  },
   steerQueuedComment: (
     id: string,
     commentId: string,
@@ -485,10 +519,12 @@ export const issuesApi = {
     reopen?: boolean,
     interrupt?: boolean,
     attachmentIds?: string[],
+    clientRequestId?: string,
   ) =>
     confirmedCommentResponse(
       api.post<IssueComment>(`/issues/${id}/comments`, {
         body,
+        ...(clientRequestId ? { clientRequestId } : {}),
         ...(reopen === undefined ? {} : { reopen }),
         ...(interrupt === undefined ? {} : { interrupt }),
         ...(attachmentIds?.length ? { attachmentIds } : {}),

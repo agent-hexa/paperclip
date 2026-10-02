@@ -29,6 +29,7 @@ import type { Duplex } from "node:stream";
 import { fileURLToPath } from "node:url";
 
 import { NativeSessionProtocolIntegrityError } from "../contracts/native-session-backend.js";
+import { ACPX_CREDENTIAL_BINDING_ENV, ACPX_CREDENTIAL_NAMES } from "../drivers/acpx/environment.js";
 import { githubCredentialEnvironment } from "../github-credential-environment.js";
 import {
   validatePrpEvent,
@@ -51,13 +52,14 @@ const coreStateSchema = "paperclip.runner.durable.control-plane-state.v1";
 const transitionCoreStateSchema =
   "paperclip.runner.durable.control-plane-state.warm-transition.v1";
 const maxFrameBytes = 1024 * 1024;
-const maxCommandBytes = maxFrameBytes - 4 * 1024;
+// Secure frames hex-encode ciphertext. Reserve envelope/tag space as well.
+const maxCommandBytes = Math.floor((maxFrameBytes - 4 * 1024) / 2);
 const maxCommands = 500;
 // A provider can emit several 100-event runner batches before the transport's
 // polling turn regains the event loop. Match the transport's explicit deferred
 // event bound so a valid burst is not compacted before it can be observed.
 const maxCommittedEventWindow = 4_096;
-const maxStateBytes = 192 * 1024 * 1024;
+const maxStateBytes = 256 * 1024 * 1024;
 const authChallengeTtlMs = 5_000;
 const stableIdPattern = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,239}$/;
 const runnerDigestPattern = /^sha256:[0-9a-f]{64}$/;
@@ -221,6 +223,13 @@ interface SecureChannel {
   sendCounter: bigint;
   receiveCounter: bigint;
   sessionId: string;
+}
+
+/** Only the dispatch boundary may assert that no business operation started. */
+export class SemanticToolNotDispatchedError extends Error {
+  constructor() {
+    super("semantic_tool_not_dispatched");
+  }
 }
 
 export interface DurablePrpControlPlaneOptions {
@@ -585,7 +594,11 @@ function unsettledSemanticInput(
       command.payload.sourceEventType !== event.eventType ||
       canonicalJson(command.payload.correlation) !==
         canonicalJson(expectedCorrelation) ||
-      canonicalJson(command.payload.input) !== canonicalJson(semantic.input)
+      (command.payload.inputDigest === undefined
+        ? canonicalJson(command.payload.input) !== canonicalJson(semantic.input)
+        : command.payload.inputDigest !== canonicalDigest(semantic.input)
+          || (command.payload.input !== undefined
+            && canonicalJson(command.payload.input) !== canonicalJson(semantic.input)))
     );
   } catch {
     // Malformed retained evidence cannot establish settled authority, and
@@ -1621,6 +1634,35 @@ export class DurablePrpControlPlane {
     );
   }
 
+  /** Safe run-log evidence: identities and delivery state, never tool contents. */
+  semanticToolSettlementDiagnostics(): Record<string, unknown> {
+    const pending = this.#store.state.committedEvents.filter((event) =>
+      unsettledSemanticInput(event, this.#store.state),
+    );
+    return {
+      persistenceFailed: this.#semanticResultPersistenceFailed,
+      pending: pending.map((entry) => {
+        const event = entry.envelope.payload as Record<string, unknown>;
+        const payload = event.payload as Record<string, unknown>;
+        const tool = payload.semantic_tool as Record<string, unknown>;
+        return {
+          sourceEventId: entry.sourceEventId,
+          callId: tool.callId,
+          operationId: tool.operationId,
+          inputDigest: canonicalDigest(tool.input),
+        };
+      }),
+      deliveries: this.#store.state.commands
+        .filter((command) => command.type === "semantic_tool.result" && command.status !== "completed")
+        .map((command) => ({
+          commandId: command.commandId,
+          callId: command.payload.callId,
+          operationId: command.payload.operationId,
+          status: command.status,
+        })),
+    };
+  }
+
   /**
    * Atomically advances a settled reusable runner to a new run authority while
    * retaining its existing connection lease secret. The runner performs the
@@ -2057,6 +2099,9 @@ export class DurablePrpControlPlane {
       await this.#authResponse(connection, envelope);
       return;
     }
+    // Admit every post-handshake frame against persisted authority before
+    // dispatch, including lease_renew. Renewal cannot revive a revoked or
+    // expired credential or bypass changes to its persisted binding.
     if (
       connection.secureChannel === null ||
       connection.lease === null ||
@@ -2066,6 +2111,10 @@ export class DurablePrpControlPlane {
       connection.lease.expiresAtUnixMs <= Date.now()
     ) {
       connection.close();
+      return;
+    }
+    if (kind === "lease_renew") {
+      this.#renewLease(connection, envelope);
       return;
     }
     if (kind === "event") {
@@ -2141,6 +2190,62 @@ export class DurablePrpControlPlane {
     if (kind !== "pong") {
       connection.close();
     }
+  }
+
+  #renewLease(
+    connection: AuthorityConnection,
+    envelope: Record<string, unknown>,
+  ): void {
+    const lease = connection.lease!;
+    const payload = envelope.payload as Record<string, unknown> | undefined;
+    const expectedExpiry = payload?.connectionLeaseExpiresAtUnixMs;
+    if (
+      Object.entries(connection.identity!).some(
+        ([key, value]) => envelope[key] !== value,
+      ) ||
+      envelope.connectionId !== connection.connectionId ||
+      envelope.connectionLeaseId !== lease.leaseId ||
+      payload?.connectionLeaseRevocationEpoch !== lease.revocationEpoch ||
+      !Number.isSafeInteger(expectedExpiry) ||
+      (expectedExpiry as number) <= 0 ||
+      (expectedExpiry as number) > lease.expiresAtUnixMs
+    ) {
+      connection.close();
+      return;
+    }
+    // A handoff receipt binds the exact expiry. Finish that boundary before
+    // renewing; terminal commands likewise retain their existing authority.
+    if (
+      connection.replayOnly ||
+      this.#store.state.warmTransition ||
+      connection.terminalLifecycleCommandId !== null
+    ) return;
+    // Repeating a request after a lost reply replays the persisted expiry.
+    // It never extends a credential twice for the same observed generation.
+    if (expectedExpiry === lease.expiresAtUnixMs) {
+      const candidate = structuredClone(this.#store.state);
+      const renewed = candidate.leases[lease.credentialId]!;
+      renewed.expiresAtUnixMs = Math.max(
+        lease.expiresAtUnixMs,
+        Date.now() + this.#connectionLeaseTtlMs,
+      );
+      renewed.expiresAt = new Date(renewed.expiresAtUnixMs).toISOString();
+      candidate.lastLeaseExpiresAt = renewed.expiresAt;
+      this.#store.commit(candidate);
+      connection.lease = this.#store.state.leases[lease.credentialId]!;
+    }
+    connection.sendJson(
+      this.#controlEnvelope(
+        connection,
+        `lease_renewed_${expectedExpiry}`,
+        "lease_renewed",
+        {
+          previousExpiresAtUnixMs: expectedExpiry,
+          connectionLeaseExpiresAtUnixMs: connection.lease!.expiresAtUnixMs,
+          connectionLeaseRevocationEpoch: connection.lease!.revocationEpoch,
+        },
+      ),
+    );
   }
 
   #authorizeHello(
@@ -2652,6 +2757,7 @@ export class DurablePrpControlPlane {
       payload: {
         selectedVersion: lease.protocolVersion,
         heartbeatIntervalMs: 250,
+        connectionLeaseRenewalVersion: 1,
         connectionLeaseId: lease.leaseId,
         ...(leaseToken === null ? {} : { connectionLeaseToken: leaseToken }),
         connectionLeaseExpiresAt: lease.expiresAt,
@@ -3150,13 +3256,21 @@ export class DurablePrpControlPlane {
       const alreadyQueued = this.#store.state.commands.some(
         (command) => command.commandId === commandId,
       );
-      if (!alreadyQueued && !this.#pendingSemanticCalls.has(commandId)) {
+      // A committed input without a result after restart may already have
+      // changed the outside world. Never redispatch it on event replay. Only
+      // the original admitted callback may publish its result; missing outcome
+      // evidence stays pending for authoritative reconciliation.
+      if (existing === undefined && !alreadyQueued && !this.#pendingSemanticCalls.has(commandId)) {
         this.#pendingSemanticCalls.add(commandId);
         const queueResult = (result: unknown, isError: boolean): void => {
           try {
+            // Retain the full input once in its canonical event. Copying a
+            // large write into its result command can exceed the wire bound
+            // after the write has already committed. Bind it by exact digest.
+            const { input, ...metadata } = call;
             this.queueCommand(
               "semantic_tool.result",
-              { ...call, result, isError },
+              { ...metadata, inputDigest: canonicalDigest(input), result, isError },
               commandId,
               true,
             );
@@ -3172,9 +3286,20 @@ export class DurablePrpControlPlane {
           .then((outcome) =>
             queueResult(outcome.result, outcome.isError === true),
           )
-          .catch(() =>
-            queueResult({ code: "semantic_tool_bridge_failed" }, true),
-          )
+          .catch((error: unknown) => {
+            if (error instanceof SemanticToolNotDispatchedError) {
+              queueResult({ error: {
+                code: "semantic_tool_not_dispatched",
+                retryable: false,
+                message: "The turn stopped before this operation was dispatched.",
+              } }, true);
+              return;
+            }
+            // A rejected dispatcher promise does not prove that its effect
+            // rolled back. Do not fabricate a final failure or retry the write.
+            this.#semanticResultPersistenceFailed = true;
+            this.disconnectActiveRunner();
+          })
           .finally(() => this.#pendingSemanticCalls.delete(commandId));
       }
     }
@@ -3213,12 +3338,17 @@ const runnerPlatformEnvironmentKeys = [
 ] as const;
 
 const runnerExplicitProviderEnvironmentKeys = [
-  "OPENROUTER_API_KEY",
+  ...ACPX_CREDENTIAL_NAMES.pi,
+  ...ACPX_CREDENTIAL_NAMES.cursor,
+  ...ACPX_CREDENTIAL_NAMES.copilot,
+  ACPX_CREDENTIAL_BINDING_ENV,
   "ANTHROPIC_API_KEY",
   "CLAUDE_CODE_OAUTH_TOKEN",
   "OPENAI_API_KEY",
   "CODEX_API_KEY",
   "PAPERCLIP_ACPX_CODEX_AUTH_JSON_SECRET",
+  "PAPERCLIP_ACPX_GROK_AUTH_JSON_SECRET",
+  "XAI_API_KEY",
   "AWS_REGION",
   "AWS_DEFAULT_REGION",
   "AWS_WEB_IDENTITY_TOKEN_FILE",
@@ -3237,6 +3367,7 @@ const runnerExplicitProviderEnvironmentKeys = [
   "PAPERCLIP_NATIVE_MCP_TOKEN",
   "PAPERCLIP_NATIVE_RUNTIME_CONTEXT_PATH",
   "PAPERCLIP_RUNNER_EXTERNAL_SANDBOX",
+  "PAPERCLIP_ACPX_BUILTIN_ROOT",
   "PAPERCLIP_ACPX_PROVIDER_PACKAGE_ROOT",
   "PAPERCLIP_ACPX_PROVIDER_PACKAGE_MANIFEST",
   "PAPERCLIP_ACPX_PROVIDER_RECOVERY_POLICY",

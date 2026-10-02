@@ -125,6 +125,57 @@ export function completeRetainedNativeSessionCleanup(
   return matches.length;
 }
 
+/** Control-plane-only cleanup boundary after the environment provider confirmed
+ * termination of the exact remote resource for this run. This retires process
+ * ownership, not checkpoints, action outcomes, or authorization to run again.
+ * An in-flight close must settle first: it must never reach a reused sandbox.
+ */
+export function completeTerminatedRemoteNativeSessionCleanup(binding: {
+  companyId: string;
+  runId: string;
+  remoteCleanupScope: string;
+}): boolean {
+  if (!binding.remoteCleanupScope) return false;
+  const matches = [...quarantinedSessionCleanups].filter(({ session, domain }) => {
+    const identity = session.identity();
+    // Domains are created internally from company, backend kind/name, and the
+    // optional remote resource. Local domains have no fourth element.
+    const [, , , remoteCleanupScope] = JSON.parse(domain) as string[];
+    return identity.companyId === binding.companyId && identity.runId === binding.runId &&
+      remoteCleanupScope === binding.remoteCleanupScope;
+  });
+  if (matches.some(entry => entry.attempt || entry.recovery)) return false;
+  for (const entry of matches) {
+    if (entry.timer) clearTimeout(entry.timer);
+    entry.timer = null;
+    quarantinedSessionCleanups.delete(entry);
+  }
+  return true;
+}
+
+/** Host-only counterpart of remote resource termination. The caller has verified
+ * both exact local process identities and durably fenced their run. This removes
+ * only cleanup ownership; the retained checkpoint is never made resumable.
+ */
+export function completeTerminatedLocalNativeSessionCleanup(binding: {
+  companyId: string;
+  runId: string;
+  runnerInstanceId: string;
+}): boolean {
+  const matches = [...quarantinedSessionCleanups].filter(({ session, domain }) => {
+    const identity = session.identity();
+    const parts = JSON.parse(domain) as string[];
+    return parts.length === 3 && identity.companyId === binding.companyId && identity.runId === binding.runId;
+  });
+  if (matches.some(entry => entry.attempt || entry.recovery ||
+      sessionOriginRunnerInstances.get(entry.session) !== binding.runnerInstanceId)) return false;
+  for (const entry of matches) {
+    if (entry.timer) clearTimeout(entry.timer);
+    quarantinedSessionCleanups.delete(entry);
+  }
+  return true;
+}
+
 export interface NativeSessionGoalControl {
   requestId: string;
   action: "create" | "edit" | "replace" | "pause" | "resume" | "clear";
@@ -133,12 +184,20 @@ export interface NativeSessionGoalControl {
 }
 
 export interface ExecuteNativeSessionOptions {
+  /** Durable launch intent, after cleanup admission and before provider calls. */
+  onSessionAdmission?: () => Promise<void>;
   input: NativeExecutionInput;
   backend: NativeSessionBackend;
   controlPlane: ControlPlanePort;
   runnerInstanceId: string;
   controlPlaneInstanceId: string;
+  /** Trusted provider resource identity: independent remote sandboxes must not
+   * inherit each other's process-cleanup gates. Omit for local backends. */
+  remoteCleanupScope?: string;
+  /** Operation bound; explicit values also preserve the legacy turn bound. */
   timeoutMs?: number;
+  /** Total turn duration. Zero or no configured bound allows long-running work. */
+  turnTimeoutMs?: number;
   /** Abort admission while waiting for prior cleanup in the same domain. */
   signal?: AbortSignal;
   /** Internal test seam; production bounds checkpoint persistence to 30 seconds. */
@@ -161,6 +220,9 @@ export interface ExecuteNativeSessionOptions {
    * carries required persistence (for example, a remote runner checkpoint).
    */
   requireSessionCloseBeforeReturn?: boolean;
+  /** Trusted cleanup observer, called only after the owned close completes.
+   * Requires requireSessionCloseBeforeReturn; never called for a live warm session. */
+  onSessionClosed?: () => Promise<void>;
   onCheckpoint?: (
     snapshot: PersistedNativeSession,
     options?: CheckpointControlPlaneSessionOptions,
@@ -1127,9 +1189,19 @@ async function consumeTurn(
     return await Promise.race([
       consumer,
       new Promise<never>((_, reject) => {
-        timer = setTimeout(() => {
-          reject(new Error(`native session timed out after ${timeoutMs}ms`));
-        }, timeoutMs);
+        if (timeoutMs <= 0) return;
+        // Node timers overflow above ~24.8 days. Keep explicit long deadlines
+        // in bounded chunks instead of accidentally firing them immediately.
+        const deadline = Date.now() + timeoutMs;
+        const checkDeadline = () => {
+          const remaining = deadline - Date.now();
+          if (remaining <= 0) {
+            reject(new Error(`native session timed out after ${timeoutMs}ms`));
+          } else {
+            timer = setTimeout(checkDeadline, Math.min(remaining, 2_147_483_647));
+          }
+        };
+        checkDeadline();
       }),
       handoffFailure,
       externalAbortFailure,
@@ -1739,6 +1811,7 @@ export async function executeNativeSession(
     input.binding.companyId,
     descriptor.kind,
     descriptor.name,
+    ...(options.remoteCleanupScope ? [options.remoteCleanupScope] : []),
   ]);
   await retryQuarantinedSessionCleanups(cleanupDomain, options.signal);
   if ("runtimeContext" in input) {
@@ -1796,6 +1869,7 @@ export async function executeNativeSession(
     previousProviderSessionId: string | null;
   } | null = null;
   let reconciledRecoveryCheckpoint: PersistedNativeSession | null = null;
+  await options.onSessionAdmission?.();
   if (options.existingSession) {
     if (options.existingSession.attachRun === undefined) {
       throw new Error("native_session_multi_run_unavailable");
@@ -2049,12 +2123,12 @@ export async function executeNativeSession(
   let goalCheckpointRequiresSuspension = Boolean(
     options.sessionGoalControl || options.resumeSessionGoalHeartbeat || persistedSession?.goal,
   );
-  let protocolIntegrityFailure: NativeSessionProtocolIntegrityError | null = null;
+  let executionFailure: { error: unknown } | null = null;
   try {
     // Ownership publication is part of the execution-owned lifetime. If the
     // callback fails, the finally block below still quarantines and closes the
     // provider session.
-    options.onSession?.(session);
+    await options.onSession?.(session);
     const checkpointTimeoutMs =
       options.checkpointTimeoutMs ?? DEFAULT_NATIVE_CHECKPOINT_TIMEOUT_MS;
     const persistCheckpoint = (
@@ -2201,7 +2275,7 @@ export async function executeNativeSession(
               session,
               options.controlPlane,
               input,
-              options.timeoutMs ?? 900_000,
+              options.turnTimeoutMs ?? options.timeoutMs ?? 0,
               options.runtimeInputLiveWindowMs ??
                 DEFAULT_NATIVE_RUNTIME_INPUT_LIVE_WINDOW_MS,
               options.keepSessionOpen
@@ -2258,7 +2332,9 @@ export async function executeNativeSession(
           }
           await checkpoint();
         } else if (shouldStartFreshTurn) {
-          const modelEnvelope = buildNativeModelEnvelope(input);
+          let modelEnvelope = recovered
+            ? buildNativeModelEnvelope(input, { resumedSession: true })
+            : buildNativeModelEnvelope(input);
           const dispositionOnlyRecovery = Boolean(
             recovered &&
             !recoveredSnapshot.semanticResult &&
@@ -2275,6 +2351,10 @@ export async function executeNativeSession(
                 })
               : false;
           if (dispositionOnlyRecovery && !effectFreeInitialAcpxTurn) {
+            modelEnvelope = buildNativeModelEnvelope(input);
+            // Source references cannot resolve after replacing the task prompt.
+            modelEnvelope.completionContract = structuredClone(input.completionContract.contract);
+            if ("requestedSkills" in modelEnvelope) modelEnvelope.requestedSkills = [];
             modelEnvelope.task.prompt = [
               "Paperclip semantic-result recovery for a prior completed provider turn.",
               "The prior turn already performed the work and its user-facing final answer is recorded.",
@@ -2282,8 +2362,13 @@ export async function executeNativeSession(
               "Use the existing session context to invoke exactly one paperclip_finish or paperclip_block with the accurate current disposition, then stop without additional user-facing prose.",
             ].join("\n");
           }
+          if (!(dispositionOnlyRecovery && !effectFreeInitialAcpxTurn) && "requestedSkills" in modelEnvelope && options.backend.preparedTaskConstraints) {
+            modelEnvelope.constraints = [...options.backend.preparedTaskConstraints];
+          }
           await session.startTurn({
             message: { role: "user", text: JSON.stringify(modelEnvelope) },
+            ...(recovered && modelEnvelope.schema === "paperclip.native-continuation.v1"
+              ? { continuation: true as const } : {}),
             requestedCollaborationMode:
               "executionMode" in input ? input.executionMode : "default",
           });
@@ -2645,9 +2730,7 @@ export async function executeNativeSession(
     executionSucceeded = true;
     return { ...durableExecutionResult, ...enrichment };
   } catch (error) {
-    if (error instanceof NativeSessionProtocolIntegrityError) {
-      protocolIntegrityFailure = error;
-    }
+    executionFailure = { error };
     throw error;
   } finally {
     const shouldClose =
@@ -2672,8 +2755,22 @@ export async function executeNativeSession(
           // The exact cleanup owner remains retained/quarantined above. Its
           // rejection must not turn permanent integrity failure into a
           // generic retryable transport failure at the control-plane boundary.
-          throw protocolIntegrityFailure ?? closeError;
+          if (executionFailure !== null) {
+            // Keep the original identity/classification (including arbitrary
+            // thrown values). Cleanup remains inspectable without replacing
+            // the initiating failure with a generic shutdown timeout.
+            if (executionFailure.error instanceof Error) {
+              try {
+                Object.defineProperty(executionFailure.error, "cleanupError", {
+                  value: closeError, configurable: true,
+                });
+              } catch { /* Frozen errors still retain their original identity. */ }
+            }
+            throw executionFailure.error;
+          }
+          throw closeError;
         }
+        await options.onSessionClosed?.();
       }
     } else if (shouldClose && !failedCleanupDeferred) {
       // A provider that ignores close must not keep execution pending forever.
