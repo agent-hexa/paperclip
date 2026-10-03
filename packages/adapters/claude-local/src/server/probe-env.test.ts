@@ -6,11 +6,17 @@ import { buildLocalAdapterTestProbeEnv } from "./probe-env.js";
 
 const tempDirs: string[] = [];
 
+// Windows resolves a PATH command through PATHEXT and cannot execute an
+// extensionless file, so the fixture needs a host-executable name. The default
+// PATHEXT entries are upper case, and the resolver returns the probed spelling.
+const claudeExecutableName = process.platform === "win32" ? "claude.CMD" : "claude";
+const claudeExecutableBody = process.platform === "win32" ? "@exit /b 0\r\n" : "#!/bin/sh\nexit 0\n";
+
 async function makeTrustedPathWithClaude(): Promise<{ dir: string; claudePath: string }> {
   const dir = await mkdtemp(path.join(os.tmpdir(), "paperclip-probe-env-"));
   tempDirs.push(dir);
-  const claudePath = path.join(dir, "claude");
-  await writeFile(claudePath, "#!/bin/sh\nexit 0\n");
+  const claudePath = path.join(dir, claudeExecutableName);
+  await writeFile(claudePath, claudeExecutableBody);
   await chmod(claudePath, 0o755);
   return { dir, claudePath };
 }

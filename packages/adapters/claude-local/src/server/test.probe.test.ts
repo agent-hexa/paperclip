@@ -11,6 +11,7 @@ const {
   runAdapterExecutionTargetProcess,
   describeAdapterExecutionTarget,
   resolveAdapterExecutionTargetCwd,
+  prepareAdapterExecutionTargetRuntime,
   probeResult,
 } = vi.hoisted(() => {
   const probeResult: {
@@ -20,6 +21,7 @@ const {
     value: { exitCode: 1, stdout: "", stderr: "" },
     throwError: null,
   };
+  const sandboxRuntimeRootDir = "/home/daytona/paperclip-workspace/.paperclip-runtime/claude";
   return {
     probeResult,
     ensureAdapterExecutionTargetDirectory: vi.fn(async () => {}),
@@ -39,6 +41,22 @@ const {
     }),
     describeAdapterExecutionTarget: vi.fn(() => "Daytona"),
     resolveAdapterExecutionTargetCwd: vi.fn(() => "/home/daytona/paperclip-workspace"),
+    // The fake sandbox target below cannot carry a real managed-runtime
+    // staging round trip (it has no shell command and no file-sync client), so
+    // the host-side staging seam is stubbed here the same way the other adapter
+    // Test suites stub it. Managed-config materialization stays observable: the
+    // lane still builds the remote config paths from this result and still runs
+    // the materialization shell command against the fake runner.
+    prepareAdapterExecutionTargetRuntime: vi.fn(async () => ({
+      target: null,
+      workspaceRemoteDir: "/home/daytona/paperclip-workspace",
+      runtimeRootDir: sandboxRuntimeRootDir,
+      assetDirs: { "config-seed": `${sandboxRuntimeRootDir}/config-seed` },
+      additionalSourceDirs: {},
+      additionalSourceFailures: [],
+      workspaceSyncSnapshot: null,
+      restoreWorkspace: vi.fn(async () => {}),
+    })),
   };
 });
 
@@ -54,6 +72,7 @@ vi.mock("@paperclipai/adapter-utils/execution-target", async () => {
     runAdapterExecutionTargetProcess,
     describeAdapterExecutionTarget,
     resolveAdapterExecutionTargetCwd,
+    prepareAdapterExecutionTargetRuntime,
   };
 });
 
@@ -79,6 +98,13 @@ const sandboxTarget: AdapterExecutionTarget = {
 
 const initLine =
   '{"type":"system","subtype":"init","cwd":"/home/daytona/paperclip-workspace","session_id":"abc","tools":["Bash","Read"]}';
+
+// Windows resolves a PATH command through PATHEXT and cannot execute an
+// extensionless file, so a local PATH fixture needs a host-executable name. The
+// default PATHEXT entries are upper case, and the resolvers return the probed
+// spelling.
+const claudeExecutableName = process.platform === "win32" ? "claude.CMD" : "claude";
+const claudeExecutableBody = process.platform === "win32" ? "@exit /b 0\r\n" : "#!/bin/sh\nexit 0\n";
 
 afterEach(() => {
   vi.clearAllMocks();
@@ -574,8 +600,8 @@ describe("claude CLI local hello probe hardening", () => {
 
   beforeEach(async () => {
     tempDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-cli-localprobe-"));
-    claudePath = path.join(tempDir, "claude");
-    await writeFile(claudePath, "#!/bin/sh\nexit 0\n");
+    claudePath = path.join(tempDir, claudeExecutableName);
+    await writeFile(claudePath, claudeExecutableBody);
     await chmod(claudePath, 0o755);
     savedPath = process.env.PATH;
     process.env.PATH = tempDir;
@@ -644,8 +670,8 @@ describe("claude CLI local hello probe hardening", () => {
     ["claude-opus-5-5", "2.1.280"],
   ])("warns without executing %s when runtime PATH selects a different executable", async (model, minimumVersion) => {
     const runtimeDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-cli-runtime-path-"));
-    const runtimeClaudePath = path.join(runtimeDir, "claude");
-    await writeFile(runtimeClaudePath, "#!/bin/sh\nexit 0\n");
+    const runtimeClaudePath = path.join(runtimeDir, claudeExecutableName);
+    await writeFile(runtimeClaudePath, claudeExecutableBody);
     await chmod(runtimeClaudePath, 0o755);
 
     try {
