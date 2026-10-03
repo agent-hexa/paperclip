@@ -7695,7 +7695,6 @@ describeEmbeddedPostgres("issueService checkout stamps timer-wake run context", 
       title: "Needs disposition after timer checkout",
       status: "todo",
       priority: "high",
-      assigneeAgentId: agentId,
     });
 
     return { companyId, agentId, runId, issueId };

@@ -867,7 +867,7 @@ describeEmbeddedPostgres("generic remote MCP connections", () => {
       .toEqual(["oauth.access_token", "oauth.refresh_token"]);
   });
 
-<async function approveFixtureAuthorization(authorizationUrl: string) {
+async function approveFixtureAuthorization(authorizationUrl: string) {
     const url = new URL(authorizationUrl);
     const consent = await fetch(url);
     expect(consent.status).toBe(200);
