@@ -245,6 +245,34 @@ disclosed here because we changed the meaning of what a contributor wrote.
   changed the three expectations to `path.join(...)` and added
   `import path from "node:path"`. Assertions only; no behaviour change.
 
+## Connector PRs pulled on 2026-10-03 — 7 merged
+
+A second, targeted pass pulled connector/Apps-catalog work — small, low-risk, and each one
+fixes a linked upstream issue. Triaged from all 3,611 open PRs via
+`closingIssuesReferences` + timeline cross-reference.
+
+| PR | Author | Fixes | Issue author | Why it matters |
+|---|---|---|---|---|
+| [#14101](https://github.com/paperclipai/paperclip/pull/14101) | [@shravansumanthanan](https://github.com/shravansumanthanan) | [#14084](https://github.com/paperclipai/paperclip/issues/14084) | [@PAT-Main](https://github.com/PAT-Main) | Self-hosted Docker behind a remapped port built the GitHub connector callback with the internal port, so enrollment silently failed. Also fixes cross-origin OAuth popup navigation. |
+| [#14067](https://github.com/paperclipai/paperclip/pull/14067) | [@aashish254](https://github.com/aashish254) | [#14040](https://github.com/paperclipai/paperclip/issues/14040) | [@nctiggy](https://github.com/nctiggy) | A connection request dying from an AI-account failure now says so, instead of the misleading "The task assignment changed". |
+| [#11366](https://github.com/paperclipai/paperclip/pull/11366) | [@wakqasahmed](https://github.com/wakqasahmed) | [#11119](https://github.com/paperclipai/paperclip/issues/11119) | [@Oldrich333](https://github.com/Oldrich333) | Deleting a tool profile still referenced by an archived named Gateway returned 500 instead of succeeding. |
+| [#14526](https://github.com/paperclipai/paperclip/pull/14526) | [@glatinone](https://github.com/glatinone) | [#14426](https://github.com/paperclipai/paperclip/issues/14426) | [@Intuicja](https://github.com/Intuicja) | Hermes Gateway agents can be saved and run; `hermes_gateway` was missing from the AI-connection compatibility table. |
+| [#14166](https://github.com/paperclipai/paperclip/pull/14166) | [@ravinani02](https://github.com/ravinani02) | [#14140](https://github.com/paperclipai/paperclip/issues/14140) — self-reported | self | Custom/remote MCP servers answering 401 without a `WWW-Authenticate` header now get OAuth discovery instead of failing to connect. |
+| [#14224](https://github.com/paperclipai/paperclip/pull/14224) | [@gentslava](https://github.com/gentslava) | [#14223](https://github.com/paperclipai/paperclip/issues/14223) — self-reported | self | A new AI connection no longer stays hidden on the Connectors page after the provider's last connection was removed. |
+
+`#14166` and `#14224` were both reported and fixed by the same person, so only the fixer is
+credited there. The other four are cross-author — reporter and fixer are different people.
+
+### Connector PRs deliberately not taken
+
+| Upstream PR | Author | Why not taken |
+|---|---|---|
+| [#12630](https://github.com/paperclipai/paperclip/pull/12630), [#12632](https://github.com/paperclipai/paperclip/pull/12632), [#12634](https://github.com/paperclipai/paperclip/pull/12634) | [@BastitsaB](https://github.com/BastitsaB) | **Dead code.** All three fix the legacy Composio broker, which upstream **retired** in [b82661b56 / #13758](https://github.com/paperclipai/paperclip/pull/13758) (2026-09-21, "refactor(connections): retire the legacy Composio broker"). Git surfaced them as `modify/delete` conflicts — `server/src/services/composio.ts` and `composio-session-manager.ts` no longer exist, and `COMPOSIO_GALLERY_KEY` has no remaining references in `tool-access.ts`. Merging would resurrect retired integration code. |
+| [#13954](https://github.com/paperclipai/paperclip/pull/13954) | [@nctiggy](https://github.com/nctiggy) | **Already superseded upstream.** Its two substantive changes — `authorizationEndpoint` → `https://slack.com/oauth/v2_user/authorize`, `tokenEndpoint` → `https://slack.com/api/oauth.v2.user.access`, and the "User Token Scopes (not Bot Token Scopes)" guidance — are all already in our `master` via a later upstream commit. The only thing it adds is *shrinking* `scopesHint` from 28 scopes to 4, which would remove canvases/files/groups/im/mpim/lists/reactions/search access. That is a capability regression, so we took neither its changes nor its scope cut. |
+| [#14037](https://github.com/paperclipai/paperclip/pull/14037) | [@nctiggy](https://github.com/nctiggy) | Same issue as #13935 as #13954 and mutually exclusive with it; a superset that also adds `ConnectionSetupFlow.tsx` changes. Superseded for the same reason. |
+| [#14339](https://github.com/paperclipai/paperclip/pull/14339) | [@EduardoVasconceloss](https://github.com/EduardoVasconceloss) | Duplicate: closes the **same** issue (#13464) as already-merged [#14356](https://github.com/paperclipai/paperclip/pull/14356). Both add the missing `Authorization` header to `github-fetch.ts`. |
+| [#14291](https://github.com/paperclipai/paperclip/pull/14291), [#13713](https://github.com/paperclipai/paperclip/pull/13713) | [@BluePhi09](https://github.com/BluePhi09), [@zannis](https://github.com/zannis) | Too large for a sync pass (63 and 33 files, new packages and DB migrations, both `CONFLICTING`). Worth dedicated review. |
+
 ## Skipped / not taken
 
 | Upstream PR | Author | Why not taken |
@@ -254,18 +282,64 @@ disclosed here because we changed the meaning of what a contributor wrote.
 | [#14911](https://github.com/paperclipai/paperclip/pull/14911) | [@Oigreat-bot](https://github.com/Oigreat-bot) | Skipped as an **overlapping alternative**, not a rejection on merit. It is `MERGEABLE` and addresses the same problem as [#13833](https://github.com/paperclipai/paperclip/pull/13833) (letting an unscoped run write to issues it owns), but does so by adding a DB migration, `packages/shared/src/issue-write-denial.ts` and changes to `server/src/routes/issues.ts`. We took #13833, which fixes the same root cause without a schema migration. Revisit only if #13833 proves insufficient. |
 | ~3580 remaining open PRs | various | **Out of scope by decision.** Upstream had 3,611 open PRs at the time of this sync (verified via `gh api search/issues`). We sync a named, reviewed set of bug fixes; we do not attempt to track upstream's full open queue. The exact count will drift — re-query before quoting it. |
 
-## Add third-party plugins
+## Third-party plugins added
 
-<!-- PLACEHOLDER: another agent is vendoring two plugins into packages/plugins/.
-     When that lands, add a table here with one row per plugin: plugin name,
-     upstream source repo and URL, upstream author/maintainer login, license,
-     the commit or release we vendored from, and any local modification we made.
-     Credit the upstream author explicitly, the same way the PR table above does. -->
+Two community plugins were vendored into `packages/plugins/` on 2026-10-03 so they appear
+in the Plugins sidebar (`GET /api/plugins/examples`) and install with one click. They are
+third-party work — credit belongs to the upstream authors below, not to this fork.
 
-Not yet filled in. Two plugins are being vendored into `packages/plugins/`
-separately from this sync; this section is reserved for them so that their
-provenance and upstream authorship are recorded in the same place as the
-upstream PR credits above.
+| Plugin (in-repo path) | Upstream repo | Author / maintainer | License | Vendored at |
+|---|---|---|---|---|
+| `packages/plugins/paperclip-office` | https://github.com/Kshitijm7/paperclip-office | **[Kshitijm7](https://github.com/Kshitijm7)** (Kshitij Mittal) | Apache-2.0 | `0cd29c7` |
+| `packages/plugins/agent-pixels` | https://github.com/gcampton/Agent-Pixels | **[gcampton](https://github.com/gcampton)** (Garratt Campton) | **none declared** — see below | `42de7c5` |
+
+### Nested third-party code
+
+`packages/plugins/paperclip-office` itself vendors another project:
+
+| Vendored at | Upstream repo | Author | License | Pinned commit |
+|---|---|---|---|---|
+| `packages/plugins/paperclip-office/vendor/munder-difflin` | https://github.com/chaitanyagiri/munder-difflin | **[chaitanyagiri](https://github.com/chaitanyagiri)** / Giri | MIT (code only) | `e9793df310195e4516f66367cd02e691082a860a` |
+
+Per-file SHA-256 pins for all 22 vendored files live in
+`packages/plugins/paperclip-office/upstream/upstream.lock.json`.
+
+`packages/plugins/agent-pixels` is in turn a Paperclip port of
+[Pixel-Agents](https://github.com/pixel-agents-hq/pixel-agents) by
+**[Pablo De Lucca](https://github.com/pixel-agents-hq)** (MIT,
+`Copyright (c) 2026 Pablo De Lucca`). That attribution is preserved in
+`packages/plugins/agent-pixels/NOTICE.md`.
+
+### Licensing caveat — Agent-Pixels
+
+`gcampton/Agent-Pixels` publishes **no LICENSE file** and GitHub reports `license: null`.
+We did not invent one and deliberately omitted `license` from its `package.json`. The
+chain is MIT (Pixel-Agents) → unlicensed derivative (Agent-Pixels) → vendored here.
+**Resolve this with gcampton before redistributing the plugin outside this fork.**
+
+### Local modifications made during vendoring
+
+Both plugins had to be adapted to build inside this monorepo:
+
+- SDK dependency repointed to `"@paperclipai/plugin-sdk": "workspace:*"`.
+- Dev dependencies pinned to concrete semver matching this repo; non-workspace version
+  specifiers rewritten.
+- `tsconfig.json` replaced in both (upstream `paths`/`baseUrl` pointed at the original
+  authors' local checkouts; one dropped `noEmit` to emit `dist/`).
+- POSIX-only build steps (`rm -rf`, `cp`) replaced with cross-platform Node scripts.
+- `src/manifest.ts` rewritten to export a schema-valid `PaperclipPluginManifestV1` with
+  literal `PLUGIN_ID` / `displayName` / `description`, which is what the catalog scrapes.
+- `displayName` for paperclip-office changed from `"Office"` to `"Pixel Office"` for
+  clarity in the catalog list.
+
+### Known gap — these render as "First-party"
+
+`discoverBundledPlugins` in `server/src/routes/plugins.ts` derives `tag` purely from the
+directory path: anything not under `packages/plugins/examples/` is tagged `"first-party"`,
+and `ui/src/api/plugins.ts` only types `"example" | "first-party"`. Both community plugins
+therefore render with a **"First-party"** badge in the Plugins page today. Fixing this
+needs a new `tag`/provenance value on both the server and UI contracts — tracked as
+follow-up work, not done in this sync.
 
 ## Verification
 
@@ -288,3 +362,33 @@ What was actually run for the 2026-10-03 sync, and what was not:
   import with `Cannot find package '@paperclipai/adapter-utils'`. The
   redaction behaviour described above was verified by reading the code and the
   committed diff, not by a fresh test run.
+
+## Upstream refresh after the sync
+
+A second `git fetch upstream --prune` at the end of the session found `master` had moved
+3 commits past our merge base. Merged `upstream/master` directly (clean, no conflicts),
+so we are **0 behind upstream**. At that point we were **109 commits ahead**, because
+this fork ships ~30 upstream PRs before upstream merges them.
+
+| Upstream commit | PR | Summary |
+|---|---|---|
+| `569c7203a` | [#14863](https://github.com/paperclipai/paperclip/pull/14863) | `fix(ui): use latest issue runtime callbacks` |
+| `78e003449` | [#15007](https://github.com/paperclipai/paperclip/pull/15007) | `fix(evals): account for hiring completion notifications` |
+| `dd868ed12` | [#14961](https://github.com/paperclipai/paperclip/pull/14961) | `fix(runner): share native completion tool guidance` |
+
+## Where this leaves the fork
+
+- **0 commits behind `upstream/master`.**
+- **~109 commits ahead** — we ship fixes before upstream merges them. That is the point of
+  the sync, but it means our `master` is not a fast-forward of upstream and will conflict
+  more over time. Periodically re-run the fetch/merge described above.
+- All 30 upstream PRs referenced in this log were still **open upstream** at the time of
+  writing (none had `mergedAt`). Several were reported `CONFLICTING` against upstream
+  `master`, which is expected — our `master` carries merges they do not have.
+- Outstanding follow-ups: the `"first-party"` catalog tag for community plugins (see
+  Third-party plugins added), the Windows sandbox-sync path guard reported by the
+  `fix/probe-cluster` pass (same class as upstream
+  [#14091](https://github.com/paperclipai/paperclip/issues/14091)), and the remaining
+  `fix/acp-core`, `fix/remote-probe` and `fix/heartbeat-recovery` test clusters.
+- **Agent-Pixels has no license from its own author.** Resolve with
+  [@gcampton](https://github.com/gcampton) before redistributing outside this fork.
