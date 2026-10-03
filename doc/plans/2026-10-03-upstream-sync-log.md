@@ -245,7 +245,7 @@ disclosed here because we changed the meaning of what a contributor wrote.
   changed the three expectations to `path.join(...)` and added
   `import path from "node:path"`. Assertions only; no behaviour change.
 
-## Connector PRs pulled on 2026-10-03 — 7 merged
+## Connector PRs pulled on 2026-10-03 — 6 merged
 
 A second, targeted pass pulled connector/Apps-catalog work — small, low-risk, and each one
 fixes a linked upstream issue. Triaged from all 3,611 open PRs via
@@ -262,6 +262,28 @@ fixes a linked upstream issue. Triaged from all 3,611 open PRs via
 
 `#14166` and `#14224` were both reported and fixed by the same person, so only the fixer is
 credited there. The other four are cross-author — reporter and fixer are different people.
+
+### Connector merges that needed local work
+
+- **[#14166](https://github.com/paperclipai/paperclip/pull/14166) — conflict** in
+  `server/src/__tests__/generic-mcp-connection.test.ts`. Both sides had appended new
+  `it()` blocks at the same anchor, so we kept **both**: our `it.each` refresh/expiry test
+  (with its `approveFixtureAuthorization` and `expireFixtureCredentials` helpers) and
+  PR 14166's three new tests. Nothing was dropped from either parent.
+  A stray `<` left behind by conflict-marker removal broke the file's parse and was
+  corrected in follow-up commit `653268fc2`.
+- **[#14224](https://github.com/paperclipai/paperclip/pull/14224) — conflict** in the
+  `server/src/__tests__/ai-connections.test.ts` import list. Our side was a superset
+  (it included `principalPermissionGrants`); PR 14224 needed `toolApplications` added. We
+  took the union — no import was dropped.
+- **#14229 vs #14087 — semantic conflict, resolved in `653268fc2`.** PR 14229's new test
+  asserted that a timer-wake run with no run context fails closed with
+  `cross_issue_influence_run_context_required` *before* checkout. Its fixture pre-assigned
+  the issue to the agent — but PR 14087 (already merged) makes an assigned agent allowed to
+  write to its own issue, so the fail-closed path could no longer be reached and the
+  assertion resolved instead of rejecting. We removed `assigneeAgentId` from the fixture so
+  the precondition is genuinely reachable again. The production behaviour of both PRs is
+  untouched; only the fixture changed.
 
 ### Connector PRs deliberately not taken
 
