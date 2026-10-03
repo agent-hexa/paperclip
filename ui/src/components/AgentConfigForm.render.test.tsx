@@ -940,7 +940,7 @@ describe("AgentConfigForm environment selector", () => {
     });
 
     expect(result.onSave).toHaveBeenCalledWith({
-      adapterConfig: { model: "gpt-6-astra" },
+      adapterConfig: { model: "gpt-6-astra", modelReasoningEffort: "", reasoningEffort: "" },
       replaceAdapterConfig: true,
     });
   });
@@ -1154,7 +1154,7 @@ describe("AgentConfigForm environment selector", () => {
     const adapterConfig = (mockAgentsApi.testEnvironment.mock.calls[0]?.[2] as {
       adapterConfig: Record<string, unknown>;
     }).adapterConfig;
-    expect(adapterConfig).not.toHaveProperty("model");
+    expect(adapterConfig.model).toBe("");
     expect(result.container.textContent).not.toContain("Cannot read properties of undefined");
   });
 

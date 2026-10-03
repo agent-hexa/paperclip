@@ -909,7 +909,9 @@ export function sanitizeRecord(
       continue;
     }
     if (
-      (SECRET_PAYLOAD_KEY_RE.test(key) || AUDIT_COUNT_PAYLOAD_KEYS.has(key)) &&
+      (SECRET_PAYLOAD_KEY_RE.test(key) ||
+        AUDIT_COUNT_PAYLOAD_KEYS.has(key) ||
+        NUMERIC_TOKEN_LIMIT_KEYS.has(key)) &&
       !AUDIT_REASON_PAYLOAD_KEY_RE.test(key) &&
       !isAuditCountField(key, value) &&
       !isNumericTokenLimitField(key, value)
