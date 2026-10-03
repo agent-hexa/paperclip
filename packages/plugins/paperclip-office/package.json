@@ -1,0 +1,74 @@
+{
+  "name": "@paperclipai/plugin-paperclip-office",
+  "version": "0.1.0",
+  "type": "module",
+  "private": true,
+  "description": "Live pixel office view of a Paperclip agent company, with a Decision box for everything waiting on a human",
+  "license": "Apache-2.0",
+  "author": "Kshitijm7",
+  "homepage": "https://github.com/Kshitijm7/paperclip-office#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Kshitijm7/paperclip-office.git"
+  },
+  "bugs": {
+    "url": "https://github.com/Kshitijm7/paperclip-office/issues"
+  },
+  "paperclipPlugin": {
+    "manifest": "./dist/manifest.js",
+    "worker": "./dist/worker.js",
+    "ui": "./dist/ui/"
+  },
+  "keywords": [
+    "paperclip",
+    "paperclip-plugin",
+    "ai-agents",
+    "agent-company",
+    "pixel-art",
+    "office",
+    "pixijs",
+    "dashboard",
+    "visualization",
+    "react"
+  ],
+  "files": [
+    "dist",
+    "migrations",
+    "src",
+    "vendor",
+    "scripts",
+    "upstream",
+    "LICENSE",
+    "NOTICE",
+    "README.md",
+    "PROVENANCE.md"
+  ],
+  "scripts": {
+    "prebuild": "pnpm --filter @paperclipai/plugin-sdk ensure-build-deps",
+    "build": "node ./esbuild.config.mjs",
+    "build:tsc": "tsc -p tsconfig.json",
+    "dev": "node ./esbuild.config.mjs --watch",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "fetch-art": "node ./scripts/fetch-art.mjs"
+  },
+  "dependencies": {
+    "@paperclipai/plugin-sdk": "workspace:*",
+    "pixi.js": "8.5.1"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "@types/react": "^19.2.18",
+    "@types/react-dom": "^19.2.5",
+    "esbuild": "^0.28.2",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8",
+    "typescript": "^7.0.2",
+    "zustand": "^5.0.15"
+  },
+  "peerDependencies": {
+    "react": ">=18"
+  },
+  "engines": {
+    "node": ">=24.11.0"
+  }
+}

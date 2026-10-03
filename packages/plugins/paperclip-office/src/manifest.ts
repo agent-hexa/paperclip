@@ -1,0 +1,400 @@
+import type { PaperclipPluginManifestV1 } from "@paperclipai/plugin-sdk";
+import { PAGE_ROUTE } from "./shared/office.js";
+import { DEFAULTS } from "./shared/settings.js";
+import { PRESET_IDS } from "./layout/presets.js";
+import { LAYOUT_SPEC_SCHEMA } from "./layout/spec.js";
+import { SET_LAYOUT_TOOL } from "./shared/layout.js";
+
+/**
+ * Stable plugin ID. Must stay a lowercase slug: it namespaces plugin state,
+ * tools (`<pluginKey>:<toolName>`), and the namespaced database schema.
+ *
+ * Also scraped literally by `discoverBundledPlugins` in
+ * `server/src/routes/plugins.ts` to populate the Plugins page row, so keep it
+ * a plain string literal rather than a computed value.
+ */
+const PLUGIN_ID = "paperclip-office";
+const PLUGIN_VERSION = "0.1.0";
+
+const manifest: PaperclipPluginManifestV1 = {
+  id: PLUGIN_ID,
+  apiVersion: 1,
+  version: PLUGIN_VERSION,
+  displayName: "Pixel Office",
+  description: "Your Paperclip agent company as a live pixel office: every agent at a desk, work moving between them, and a Decision box for everything waiting on you.",
+  // Upstream project by Kshitijm7 (Kshitij Mittal); see README.md and
+  // PROVENANCE.md for the original repository and the Apache-2.0 notices.
+  author: "Kshitijm7",
+  categories: ["ui"],
+  capabilities: [
+    "agents.read",
+    "issues.read",
+    "issue.comments.read",
+    "issue.comments.create",
+    "approvals.read",
+    "approvals.respond",
+    "issue.interactions.read",
+    "issue.interactions.respond",
+    "issues.create",
+    "issues.update",
+    "issues.wakeup",
+    "companies.read",
+    "plugin.state.read",
+    "plugin.state.write",
+    "database.namespace.migrate",
+    "database.namespace.read",
+    "metrics.write",
+    "agent.tools.register",
+    "ui.page.register",
+    "ui.sidebar.register",
+    "ui.dashboardWidget.register",
+  ],
+  database: {
+    namespaceSlug: "office",
+    migrationsDir: "migrations",
+    coreReadTables: ["heartbeat_runs", "issue_comments", "cost_events", "budget_incidents"],
+  },
+  entrypoints: {
+    worker: "./dist/worker.js",
+    ui: "./dist/ui",
+  },
+  tools: [
+    {
+      name: "office_status",
+      displayName: "Office status",
+      description: "Who is idle, stuck, or overloaded right now, optionally filtered by department or state.",
+      parametersSchema: {
+        type: "object",
+        properties: {
+          department: { type: "string", description: "Restrict to one department name." },
+          state: { type: "string", enum: ["idle", "thinking", "working", "blocked"], description: "Restrict to one state." },
+        },
+      },
+    },
+    {
+      name: SET_LAYOUT_TOOL,
+      displayName: "Set office layout",
+      description: "Save a floor plan for the office view: a layout spec plus a one-paragraph rationale. Returns the spec as saved.",
+      parametersSchema: {
+        type: "object",
+        properties: {
+          spec: LAYOUT_SPEC_SCHEMA,
+          rationale: { type: "string", description: "One paragraph on why this layout fits the company." },
+        },
+        required: ["spec", "rationale"],
+      },
+    },
+  ],
+  instanceConfigSchema: {
+    type: "object",
+    properties: {
+      theme: {
+        type: "string",
+        title: "Theme",
+        description: "The office's visual style.",
+        enum: ["office", "brooklyn99", "generated", "free"],
+        default: DEFAULTS.theme,
+      },
+      stuckMinutes: {
+        type: "number",
+        title: "Stuck after (minutes)",
+        description: "An agent with a live run and no output for this long is marked stuck.",
+        default: DEFAULTS.stuckMinutes,
+        minimum: 1,
+        maximum: 240,
+      },
+      pollSeconds: {
+        type: "number",
+        title: "Refresh interval (seconds)",
+        description: "How often the office polls for new data.",
+        default: DEFAULTS.pollSeconds,
+        minimum: 2,
+        maximum: 60,
+      },
+      idleRoaming: {
+        type: "string",
+        title: "Idle roaming",
+        description: "Whether idle agents wander the floor or stay seated at their desks.",
+        enum: ["off", "calm", "lively"],
+        default: DEFAULTS.idleRoaming,
+      },
+      chatter: {
+        type: "boolean",
+        title: "Chatter",
+        description: "Show ambient small talk (gossip, cheers, errands) between agents.",
+        default: DEFAULTS.chatter,
+      },
+      bubbles: {
+        type: "string",
+        title: "Thought bubbles",
+        description: "What each agent's thought bubble shows.",
+        enum: ["activity", "issue", "output", "none"],
+        default: DEFAULTS.bubbles,
+      },
+      castStyle: {
+        type: "string",
+        title: "Cast style",
+        description: "The character roster used for agents on the floor.",
+        enum: ["office", "neutral"],
+        default: DEFAULTS.castStyle,
+      },
+      language: {
+        type: "string",
+        title: "Language",
+        description: "Language for on-screen office text.",
+        enum: ["en", "ar", "zh-CN"],
+        default: DEFAULTS.language,
+      },
+      showOrgPanel: {
+        type: "boolean",
+        title: "Show org panel",
+        description: "Show the department/org-chart panel below the office.",
+        default: DEFAULTS.showOrgPanel,
+      },
+      showStateBoard: {
+        type: "boolean",
+        title: "Show state board",
+        description: "Show the per-agent state table below the office.",
+        default: DEFAULTS.showStateBoard,
+      },
+      activityFeed: {
+        type: "boolean",
+        title: "Activity feed",
+        description: "Show the collapsible activity feed below the office.",
+        default: DEFAULTS.activityFeed,
+      },
+      activityWindowHours: {
+        type: "number",
+        title: "Activity window (hours)",
+        description: "How far back the activity feed looks.",
+        default: DEFAULTS.activityWindowHours,
+        minimum: 1,
+        maximum: 168,
+      },
+      activityLimit: {
+        type: "number",
+        title: "Activity feed limit",
+        description: "Maximum number of activity events shown.",
+        default: DEFAULTS.activityLimit,
+        minimum: 10,
+        maximum: 500,
+      },
+      officeStatusTool: {
+        type: "boolean",
+        title: "Office status agent tool",
+        description: "Let agents call the office_status tool to check who is idle, stuck, or overloaded.",
+        default: DEFAULTS.officeStatusTool,
+      },
+      overloadThreshold: {
+        type: "number",
+        title: "Overload threshold",
+        description: "An agent with this many or more open issues is reported as overloaded.",
+        default: DEFAULTS.overloadThreshold,
+        minimum: 1,
+        maximum: 50,
+      },
+      heatmap: {
+        type: "boolean",
+        title: "Bottleneck heatmap",
+        description: "Color each occupied desk by that agent's queue depth.",
+        default: DEFAULTS.heatmap,
+      },
+      heatLow: {
+        type: "number",
+        title: "Heatmap low threshold",
+        description: "Queue depth at or above this many open issues turns a desk amber.",
+        default: DEFAULTS.heatLow,
+        minimum: 1,
+        maximum: 999,
+      },
+      heatHigh: {
+        type: "number",
+        title: "Heatmap high threshold",
+        description: "Queue depth at or above this many open issues turns a desk red.",
+        default: DEFAULTS.heatHigh,
+        minimum: 1,
+        maximum: 999,
+      },
+      search: {
+        type: "boolean",
+        title: "Agent search",
+        description: "Press / to search and jump to an agent.",
+        default: DEFAULTS.search,
+      },
+      bottleneckCount: {
+        type: "number",
+        title: "Bottleneck list size",
+        description: "How many agents to show in the Bottlenecks mini list.",
+        default: DEFAULTS.bottleneckCount,
+        minimum: 1,
+        maximum: 20,
+      },
+      showCost: {
+        type: "boolean",
+        title: "Show cost",
+        description: "Show cost per agent and department.",
+        default: DEFAULTS.showCost,
+      },
+      costWindowDays: {
+        type: "number",
+        title: "Cost window (days)",
+        description: "How many trailing days of cost to sum per agent and department.",
+        default: DEFAULTS.costWindowDays,
+        minimum: 1,
+        maximum: 90,
+      },
+      costMetric: {
+        type: "string",
+        title: "Spend shown as",
+        description: "auto shows tokens when there is no dollar spend (subscription runs record $0).",
+        enum: ["auto", "dollars", "tokens"],
+        default: DEFAULTS.costMetric,
+      },
+      budgetAlerts: {
+        type: "boolean",
+        title: "Budget alerts",
+        description: "Show a banner for open budget incidents and mark agents over budget.",
+        default: DEFAULTS.budgetAlerts,
+      },
+      askBoard: {
+        type: "boolean",
+        title: "ASK ME board",
+        description: "Pin each pending approval as a note on the office ASK ME board; clicking the board opens the inbox.",
+        default: DEFAULTS.askBoard,
+      },
+      layoutPreset: {
+        type: "string",
+        title: "Layout preset",
+        description: "Default floor plan for the generated theme. A layout picked in the office overrides it.",
+        enum: PRESET_IDS,
+        default: DEFAULTS.layoutPreset,
+      },
+      layoutPicker: {
+        type: "boolean",
+        title: "Layout picker",
+        description: "Show a layout button in the office controls.",
+        default: DEFAULTS.layoutPicker,
+      },
+      agentLayouts: {
+        type: "boolean",
+        title: "Agent-designed layouts",
+        description: "Let an agent design the floor plan through the office_set_layout tool.",
+        default: DEFAULTS.agentLayouts,
+      },
+      layoutDesignerAgentId: {
+        type: "string",
+        title: "Layout designer agent id",
+        description: "Agent asked to design the floor. Empty means the top of the org chart.",
+        default: DEFAULTS.layoutDesignerAgentId,
+      },
+      decisionBox: {
+        type: "boolean",
+        title: "Decision box",
+        description: "Show everything pending that needs a human, with buttons to decide.",
+        default: DEFAULTS.decisionBox,
+      },
+      decisionIssueScan: {
+        type: "number",
+        title: "Decision issue scan",
+        description: "How many of the most recently updated open issues to scan for pending decision cards.",
+        default: DEFAULTS.decisionIssueScan,
+        minimum: 1,
+        maximum: 500,
+      },
+      scoring: {
+        type: "boolean",
+        title: "Agent scores",
+        description: "Compute a productivity and efficiency score per agent.",
+        default: DEFAULTS.scoring,
+      },
+      scoreWindowDays: {
+        type: "number",
+        title: "Score window (days)",
+        description: "How many trailing days of output and spend feed the scores.",
+        default: DEFAULTS.scoreWindowDays,
+        minimum: 1,
+        maximum: 90,
+      },
+      efficiencyStuckPenalty: {
+        type: "number",
+        title: "Efficiency stuck penalty",
+        description: "How much stuck or blocked minutes discount an agent's efficiency score.",
+        default: DEFAULTS.efficiencyStuckPenalty,
+        minimum: 0,
+        maximum: 1,
+      },
+      scoreboard: {
+        type: "boolean",
+        title: "Scoreboard panel",
+        description: "Show the sortable agent scoreboard below the office.",
+        default: DEFAULTS.scoreboard,
+      },
+      fameRanking: {
+        type: "string",
+        title: "Wall of Fame ranking",
+        description: "What the Wall of Fame ranks agents by.",
+        enum: ["productivity", "efficiency", "current"],
+        default: DEFAULTS.fameRanking,
+      },
+      paEnabled: {
+        type: "boolean",
+        title: "Personal Assistant",
+        description: "Run the PA: a periodic check-in on every agent, walking the office floor.",
+        default: DEFAULTS.paEnabled,
+      },
+      paReports: {
+        type: "boolean",
+        title: "PA reports to Chief",
+        description: "Each round, post a supervisor report to the Chief (decisions, flags, roll call, agent reports) and wake the Chief when a decision is needed.",
+        default: DEFAULTS.paReports,
+      },
+      paIntervalMinutes: {
+        type: "number",
+        title: "PA check interval (minutes)",
+        description: "How often the PA checks on every agent.",
+        default: DEFAULTS.paIntervalMinutes,
+        minimum: 5,
+        maximum: 1440,
+      },
+      roleAttire: {
+        type: "boolean",
+        title: "Role attire",
+        description: "Give agents an outfit that matches their role (suit, shirt and tie, polo, blouse...).",
+        default: DEFAULTS.roleAttire,
+      },
+      nameplates: {
+        type: "boolean",
+        title: "Nameplates",
+        description: "Show a name and short role under each agent, following them as they walk.",
+        default: DEFAULTS.nameplates,
+      },
+      issueTags: {
+        type: "boolean",
+        title: "Issue tags",
+        description: "Show the current issue key and title above working, thinking or blocked agents.",
+        default: DEFAULTS.issueTags,
+      },
+      stateRings: {
+        type: "boolean",
+        title: "State rings",
+        description: "Color a ring under each agent by state (working, thinking, blocked, stuck, idle).",
+        default: DEFAULTS.stateRings,
+      },
+      rosterSidebar: {
+        type: "boolean",
+        title: "Roster sidebar",
+        description: "A collapsible sidebar listing every agent with search, state and scores.",
+        default: DEFAULTS.rosterSidebar,
+      },
+    },
+  },
+  ui: {
+    slots: [
+      { type: "page", id: "office", displayName: "Office", exportName: "OfficePage", routePath: PAGE_ROUTE },
+      { type: "sidebar", id: "nav", displayName: "Office", exportName: "SidebarLink" },
+      { type: "dashboardWidget", id: "summary", displayName: "Office", exportName: "OfficeWidget" },
+    ],
+  },
+};
+
+export default manifest;
