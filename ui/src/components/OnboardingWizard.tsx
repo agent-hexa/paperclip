@@ -19,7 +19,7 @@ import type {
   Environment,
   InstanceSettings,
 } from "@paperclipai/shared";
-import { AGENT_ROLES, AGENT_ROLE_LABELS, ADAPTER_AUTH_MISSING_CHECK_CODE } from "@paperclipai/shared";
+import { AGENT_ROLES, AGENT_ROLE_LABELS, ADAPTER_AUTH_MISSING_CHECK_CODE, AI_CONNECTION_CAPABILITIES } from "@paperclipai/shared";
 import { AdapterLoginPanel } from "./AgentConfigForm";
 import {
   CONNECT_SOURCE_NAMES,
@@ -1059,12 +1059,25 @@ function OnboardingWizardInner({
   // could ever apply to the current adapter and environment.
   const localLoginHealth = useQuery({ queryKey: queryKeys.health, queryFn: healthApi.get });
   const canUseLocalLogin = resolvedLoginEnvironment?.driver === "local" && (localLoginHealth.data?.localAiLoginSupported ?? localLoginHealth.data?.deploymentMode === "local_trusted");
+  /*
+   * The local-login attempt endpoint only accepts `method: "subscription"`, so
+   * it can only ever succeed for a provider that actually offers a subscription
+   * method. OpenCode's managed provider is OpenRouter, whose only method for
+   * opencode_local is `api_key` (AI_CONNECTION_CAPABILITIES) - attempting the
+   * subscription login rejected every request with a 422, in a retry loop,
+   * before the customer could do anything. OpenCode authenticates through its
+   * own CLI, so it needs no managed subscription at all.
+   */
+  const managedProviderSupportsSubscriptionLogin = Boolean(
+    managedProvider && AI_CONNECTION_CAPABILITIES[managedProvider]?.methods.subscription,
+  );
   const localLogin = useLocalAiLogin(createdCompanyId, {
     provider: managedProvider ?? "anthropic", method: "subscription",
     name: `My ${CONNECT_SOURCE_NAMES[adapterType] ?? managedProvider} subscription`,
     ownership: "personal", agentIds: [], allAgents: true,
-  }, effectiveOnboardingOpen && step === 4 && canUseLocalLogin && credentialMode !== "api" &&
-    Boolean(managedProvider) && !savedSubscription && !savedKeys.storedLogin.data && !managedBindingForStep(),
+  }, effectiveOnboardingOpen && step === 4 && canUseLocalLogin &&
+    credentialMode !== "api" && managedProviderSupportsSubscriptionLogin &&
+    !savedSubscription && !savedKeys.storedLogin.data && !managedBindingForStep(),
   { allowHostClaude: localLoginHealth.data?.deploymentMode === "local_trusted" });
   // A result from a previous selection must not hire or advance this wizard.
   // Environment query updates are not user navigation: the test resolves its
