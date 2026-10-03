@@ -257,6 +257,30 @@ function apiKeyEnvKeyFor(adapterType: string): string {
   return API_KEY_ENV_KEYS[adapterType] ?? "API_KEY";
 }
 
+/**
+ * The model to preselect for OpenCode.
+ *
+ * OpenCode resolves its catalog from the local CLI, so what a given deployment
+ * can run is not knowable here: a host with provider credentials lists paid
+ * models, and a host with none lists OpenCode's free models. The previous fixed
+ * default (`openai/gpt-5.2-codex`) is therefore unavailable on any keyless
+ * install, and onboarding rejected it with "Configured OpenCode model is
+ * unavailable" before the customer could choose anything.
+ *
+ * Prefer the free OpenCode model when the host lists it, then fall back to
+ * whatever the host does list, and only then to the fixed default.
+ */
+const PREFERRED_OPENCODE_FREE_MODEL = "opencode/space-bunny-free";
+
+function preferredOpenCodeModel(available: readonly { id: string }[]): string {
+  const ids = available.map((entry) => entry.id);
+  if (ids.includes(PREFERRED_OPENCODE_FREE_MODEL)) return PREFERRED_OPENCODE_FREE_MODEL;
+  if (isValidOpenCodeModelId(DEFAULT_OPENCODE_LOCAL_MODEL) && ids.includes(DEFAULT_OPENCODE_LOCAL_MODEL)) {
+    return DEFAULT_OPENCODE_LOCAL_MODEL;
+  }
+  return ids.find(isValidOpenCodeModelId) ?? DEFAULT_OPENCODE_LOCAL_MODEL;
+}
+
 function ModelSourceMark({
   type,
   Fallback,
@@ -656,6 +680,17 @@ function OnboardingWizardInner({
       ? saved.credentialModeChoice as CredentialMode | null
       : saved?.credentialMode as CredentialMode | undefined) ?? null,
   );
+  /*
+   * The resolved mode is persisted alongside the explicit choice, so a draft
+   * written while OpenCode used to default to "api" restores straight back into
+   * it and the key field returns for a key OpenCode never reads. Drop a
+   * persisted "api" for OpenCode; it can only be the old default leaking back,
+   * never a choice that means anything for this adapter.
+   */
+  const restoredCredentialMode =
+    adapterType === "opencode_local" && credentialModeChoice === "api"
+      ? null
+      : credentialModeChoice;
   /**
    * Where the connect step's sign-in sequence is.
    *
@@ -715,7 +750,7 @@ function OnboardingWizardInner({
    * Paperclip-managed key field and gated Continue behind a key OpenCode never
    * reads, so it never defaults there.
    */
-  const credentialMode = credentialModeChoice ?? (
+  const credentialMode = restoredCredentialMode ?? (
     adapterType === "opencode_local"
       ? "subscription"
       : (savedKeys.subscriptions.length > 0 || (adapterType === "claude_local" && savedKeys.storedLogin.data))
@@ -1621,6 +1656,21 @@ function OnboardingWizardInner({
         entries: [...entries].sort((a, b) => a.id.localeCompare(b.id))
       }));
   }, [filteredModels, adapterType]);
+
+  /*
+   * OpenCode's catalog is whatever the local CLI reports, which arrives after
+   * first render. Once it does, a preselected model the host cannot run is
+   * dead on arrival - the connect step rejects it before the customer can pick
+   * a different one. Re-point at a model this host actually lists.
+   */
+  useEffect(() => {
+    if (adapterType !== "opencode_local") return;
+    if (adapterModelsLoading || adapterModelsFetching) return;
+    const available = adapterModels ?? [];
+    if (available.length === 0) return;
+    if (available.some((entry) => entry.id === model)) return;
+    setModel(preferredOpenCodeModel(available));
+  }, [adapterType, adapterModels, adapterModelsLoading, adapterModelsFetching, model]);
 
   function reset() {
     onboardingDraftStorage.clear();
@@ -2700,7 +2750,7 @@ function OnboardingWizardInner({
                         autoConnectStartedRef.current = false;
                         setSourcePicked(true);
                         setAdapterType(id);
-                        if (id === "opencode_local") setModel(DEFAULT_OPENCODE_LOCAL_MODEL);
+                        if (id === "opencode_local") setModel(preferredOpenCodeModel(adapterModels ?? []));
                         else if (id !== "codex_local") setModel("");
                         setConnectPhase("collapsing");
                       }}
