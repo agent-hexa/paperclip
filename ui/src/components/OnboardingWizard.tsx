@@ -708,9 +708,18 @@ function OnboardingWizardInner({
     ? selectedSavedKey.id
     : savedKeys.options[0]?.id;
   const selectedApiKey = savedKeys.options.find((option) => option.id === selectedApiKeyId);
+  /*
+   * OpenCode resolves its own credentials: the adapter shells out to the local
+   * `opencode` CLI, which authenticates providers itself - including the free
+   * models it lists with no stored credential at all. Landing on "api" showed a
+   * Paperclip-managed key field and gated Continue behind a key OpenCode never
+   * reads, so it never defaults there.
+   */
   const credentialMode = credentialModeChoice ?? (
-    (savedKeys.subscriptions.length > 0 || (adapterType === "claude_local" && savedKeys.storedLogin.data))
-      ? "subscription" : savedKeys.options.length || adapterType === "opencode_local" ? "api" : "subscription"
+    adapterType === "opencode_local"
+      ? "subscription"
+      : (savedKeys.subscriptions.length > 0 || (adapterType === "claude_local" && savedKeys.storedLogin.data))
+        ? "subscription" : savedKeys.options.length ? "api" : "subscription"
   );
   const [createdCompanyPrefix, setCreatedCompanyPrefix] = useState<
     string | null
