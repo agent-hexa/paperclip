@@ -116,6 +116,11 @@ const adapterDisplayMap: Record<string, AdapterDisplayInfo> = {
     label: "OpenCode",
     description: "OpenCode multi-provider harness",
     icon: OpenCodeLogoIcon,
+    // Step 4's "Connect a model" grid renders only `recommended` adapters, and
+    // the picker already handles an opencode_local selection (it seeds
+    // DEFAULT_OPENCODE_LOCAL_MODEL), so without this flag OpenCode was only
+    // reachable by keyboard and never appeared as a tile.
+    recommended: true,
   },
   pi_local: {
     label: "Pi",
